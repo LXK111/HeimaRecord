@@ -12,20 +12,28 @@ import {
   Upload,
 } from "lucide-react";
 import {
+  adjustFinishedScore,
+  adjustFinishedWinner,
+  applyWarning,
   createMatchEvent,
-  evaluateAfterScore,
   evaluateTimeUp,
   finishMatch,
   formatTime,
   getEndReasonLabel,
   getWinnerLabel,
+  recordAppeal,
+  recordHit,
+  recordRoundResult,
+  resetMatch,
+  restorePreviousSnapshot,
   touch,
 } from "./domain/rules";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
 import { exportMatchesToCsv, exportMatchesToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
+import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
 import { createInitialState, loadState, saveState } from "./services/storage";
-import type { Match, TournamentState, Winner } from "./types";
+import type { Match, RuleSet, TournamentState, Winner } from "./types";
 
 type ViewKey = "import" | "matches" | "console" | "rules" | "results";
 
@@ -35,6 +43,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [importMessage, setImportMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [ruleMessage, setRuleMessage] = useState("");
+  const [adjustmentReason, setAdjustmentReason] = useState("");
   const saveTimer = useRef<number | null>(null);
 
   const selectedMatch = useMemo(
@@ -142,47 +152,52 @@ function App() {
     });
   }
 
-  function changeScore(side: "red" | "blue", delta: number) {
-    updateSelectedMatch((match) => {
-      const redScore = side === "red" ? Math.max(0, match.redScore + delta) : match.redScore;
-      const blueScore = side === "blue" ? Math.max(0, match.blueScore + delta) : match.blueScore;
-      const sideLabel = side === "red" ? "红方" : "蓝方";
-      const next = touch({
-        ...match,
-        redScore,
-        blueScore,
-        events: [...match.events, createMatchEvent(match.id, "score_changed", `${sideLabel}${delta > 0 ? "加" : "减"}${Math.abs(delta)}分`)],
-      });
-      return evaluateAfterScore(next, state.ruleSet);
-    });
+  function addHit(side: "red" | "blue", zoneId: string) {
+    updateSelectedMatch((match) => recordHit(match, side, zoneId, state.ruleSet));
   }
 
-  function addPenalty(side: "red" | "blue") {
-    updateSelectedMatch((match) => {
-      const redPenalties = side === "red" ? match.redPenalties + 1 : match.redPenalties;
-      const bluePenalties = side === "blue" ? match.bluePenalties + 1 : match.bluePenalties;
-      const scoreSide = side === "red" ? "redScore" : "blueScore";
-      const sideLabel = side === "red" ? "红方" : "蓝方";
-      const score = Math.max(0, match[scoreSide] - state.ruleSet.penaltyDeduction);
-      const next = touch({
-        ...match,
-        redPenalties,
-        bluePenalties,
-        [scoreSide]: score,
-        events: [...match.events, createMatchEvent(match.id, "penalty_added", `${sideLabel}处罚，扣${state.ruleSet.penaltyDeduction}分`)],
-      });
+  function addRoundResult(result: "red" | "blue" | "double" | "none") {
+    updateSelectedMatch((match) => recordRoundResult(match, result, state.ruleSet));
+  }
 
-      // 处罚达到上限时直接判负，避免现场继续操作造成结果歧义。
-      if (state.ruleSet.maxPenaltyCount > 0) {
-        if (redPenalties >= state.ruleSet.maxPenaltyCount) return finishMatch(next, "blue", "forfeit");
-        if (bluePenalties >= state.ruleSet.maxPenaltyCount) return finishMatch(next, "red", "forfeit");
-      }
-      return next;
-    });
+  function addWarning(side: "red" | "blue", warningId: string) {
+    updateSelectedMatch((match) => applyWarning(match, side, warningId, state.ruleSet));
+  }
+
+  function undoLastAction() {
+    updateSelectedMatch((match) => restorePreviousSnapshot(match));
+  }
+
+  function resetCurrentMatch() {
+    updateSelectedMatch((match) => resetMatch(match, state.ruleSet));
+  }
+
+  function recordCurrentAppeal() {
+    updateSelectedMatch((match) => recordAppeal(match));
+  }
+
+  function adjustScoreAfterFinish(side: "red" | "blue", delta: number) {
+    updateSelectedMatch((match) => adjustFinishedScore(match, side, delta, adjustmentReason, state.ruleSet));
+  }
+
+  function adjustWinnerAfterFinish(winner: Winner) {
+    updateSelectedMatch((match) => adjustFinishedWinner(match, winner, adjustmentReason));
   }
 
   function finishManually(winner: Winner) {
     updateSelectedMatch((match) => finishMatch(match, winner, winner === "draw" ? "draw" : "manual"));
+  }
+
+  async function handleRuleImport(file: File | null) {
+    if (!file) return;
+    setRuleMessage("正在导入规则...");
+    try {
+      const ruleSet = await parseRuleFile(file, state.ruleSet);
+      patchState((current) => ({ ...current, ruleSet }));
+      setRuleMessage("规则已导入。");
+    } catch (error) {
+      setRuleMessage(error instanceof Error ? error.message : "规则导入失败。");
+    }
   }
 
   if (isLoading) {
@@ -252,7 +267,7 @@ function App() {
                 <span>{match.groupName} · {match.piste}</span>
                 <strong>第 {match.matchNo} 场</strong>
                 <p>{match.red.name} vs {match.blue.name}</p>
-                <small>{statusLabel(match.status)} · {getWinnerLabel(match.winner, match)}</small>
+                <small>{statusLabel(match.status)} · 胜方：{getWinnerLabel(match.winner, match)}</small>
               </button>
             ))}
             {state.matches.length === 0 && <EmptyState text="还没有场次，请先导入 Excel 或 CSV。" />}
@@ -262,11 +277,20 @@ function App() {
         {activeView === "console" && (
           selectedMatch ? (
             <section className="console-layout">
+              <div className="match-tools">
+                <button onClick={undoLastAction} disabled={(selectedMatch.history ?? []).length === 0}>撤销</button>
+                <button onClick={recordCurrentAppeal}>记录申诉</button>
+                <button onClick={resetCurrentMatch}>重置比赛</button>
+                <span>胜方：{getWinnerLabel(selectedMatch.winner, selectedMatch)}</span>
+              </div>
               <div className="scoreboard">
-                <FighterPanel side="red" match={selectedMatch} onScore={changeScore} onPenalty={addPenalty} />
+                <FighterPanel side="red" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
                 <div className="timer-panel">
-                  <span>{selectedMatch.isOvertime ? "加时" : "常规时间"}</span>
+                  <span>{state.ruleSet.scoringMode === "round_limit" ? `第 ${Math.min(selectedMatch.currentRound, state.ruleSet.maxRounds)} / ${state.ruleSet.maxRounds} 回合` : selectedMatch.isOvertime ? "加时" : "常规时间"}</span>
                   <strong>{formatTime(selectedMatch.remainingSeconds)}</strong>
+                  {state.ruleSet.scoringMode === "round_limit" && (
+                    <RoundPanel match={selectedMatch} ruleSet={state.ruleSet} onRound={addRoundResult} />
+                  )}
                   <div className="timer-actions">
                     <button title="开始" onClick={() => setMatchStatus("running")} disabled={selectedMatch.status === "finished"}>
                       <Play size={20} />
@@ -279,14 +303,35 @@ function App() {
                     </button>
                   </div>
                   <div className="finish-actions">
-                    <button onClick={() => finishManually("red")}>红方胜</button>
-                    <button onClick={() => finishManually("draw")}>平局</button>
-                    <button onClick={() => finishManually("blue")}>蓝方胜</button>
+                    <button onClick={() => finishManually("red")} disabled={selectedMatch.status === "finished"}>红方胜</button>
+                    <button onClick={() => finishManually("draw")} disabled={selectedMatch.status === "finished"}>平局</button>
+                    <button onClick={() => finishManually("blue")} disabled={selectedMatch.status === "finished"}>蓝方胜</button>
                   </div>
                   <p>{statusLabel(selectedMatch.status)} · {getEndReasonLabel(selectedMatch.endReason)}</p>
                 </div>
-                <FighterPanel side="blue" match={selectedMatch} onScore={changeScore} onPenalty={addPenalty} />
+                <FighterPanel side="blue" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
               </div>
+              {selectedMatch.status === "finished" && (
+                <div className="post-adjustment">
+                  <div>
+                    <h2>赛后修正</h2>
+                    <p>申诉或仲裁后修改结果，必须填写原因并自动留痕。</p>
+                  </div>
+                  <label className="field">
+                    <span>修正原因</span>
+                    <input value={adjustmentReason} onChange={(event) => setAdjustmentReason(event.target.value)} placeholder="例如：申诉成立、仲裁改判" />
+                  </label>
+                  <div className="result-actions">
+                    <button onClick={() => adjustScoreAfterFinish("red", 1)}>红方 +1</button>
+                    <button onClick={() => adjustScoreAfterFinish("red", -1)}>红方 -1</button>
+                    <button onClick={() => adjustScoreAfterFinish("blue", 1)}>蓝方 +1</button>
+                    <button onClick={() => adjustScoreAfterFinish("blue", -1)}>蓝方 -1</button>
+                    <button onClick={() => adjustWinnerAfterFinish("red")}>改红方胜</button>
+                    <button onClick={() => adjustWinnerAfterFinish("draw")}>改平局</button>
+                    <button onClick={() => adjustWinnerAfterFinish("blue")}>改蓝方胜</button>
+                  </div>
+                </div>
+              )}
               <div className="event-log">
                 <h2>操作记录</h2>
                 {selectedMatch.events.slice().reverse().map((event) => (
@@ -303,20 +348,53 @@ function App() {
         )}
 
         {activeView === "rules" && (
-          <section className="panel rules-grid">
-            <NumberField label="比赛时长（秒）" value={state.ruleSet.durationSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, durationSeconds: value } }))} />
-            <NumberField label="目标分" value={state.ruleSet.targetScore} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, targetScore: value } }))} />
-            <NumberField label="加时时长（秒）" value={state.ruleSet.overtimeSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, overtimeSeconds: value } }))} />
-            <NumberField label="处罚扣分" value={state.ruleSet.penaltyDeduction} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, penaltyDeduction: value } }))} />
-            <NumberField label="处罚判负次数" value={state.ruleSet.maxPenaltyCount} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, maxPenaltyCount: value } }))} />
-            <label className="toggle-row">
-              <input type="checkbox" checked={state.ruleSet.allowDraw} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowDraw: event.target.checked } }))} />
-              允许平局
-            </label>
-            <label className="toggle-row">
-              <input type="checkbox" checked={state.ruleSet.enableOvertime} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, enableOvertime: event.target.checked } }))} />
-              启用加时
-            </label>
+          <section className="panel rules-panel">
+            <div className="result-toolbar">
+              <div>
+                <h2>规则文件</h2>
+                <p>支持 XLSX 多工作表，也支持单个 CSV 规则表。</p>
+              </div>
+              <div className="result-actions">
+                <label className="file-button">
+                  <FolderUp size={18} />
+                  导入规则
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleRuleImport(event.target.files?.[0] ?? null)} />
+                </label>
+                <button onClick={() => exportRuleSetToExcel(state.ruleSet)}><FileSpreadsheet size={18} />导出规则 XLSX</button>
+              </div>
+            </div>
+            {ruleMessage && <p className="notice">{ruleMessage}</p>}
+            <div className="rules-grid">
+              <label className="field">
+                <span>计分模式</span>
+                <select value={state.ruleSet.scoringMode} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, scoringMode: event.target.value as RuleSet["scoringMode"] } }))}>
+                  <option value="target_score">目标分模式</option>
+                  <option value="round_limit">限制回合模式</option>
+                </select>
+              </label>
+              <NumberField label="比赛时长（秒）" value={state.ruleSet.durationSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, durationSeconds: value } }))} />
+              <NumberField label="目标分" value={state.ruleSet.targetScore} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, targetScore: value } }))} />
+              <NumberField label="最大回合数" value={state.ruleSet.maxRounds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, maxRounds: value } }))} />
+              <NumberField label="加时时长（秒）" value={state.ruleSet.overtimeSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, overtimeSeconds: value } }))} />
+              <NumberField label="处罚判负次数" value={state.ruleSet.maxPenaltyCount} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, maxPenaltyCount: value } }))} />
+              <label className="toggle-row">
+                <input type="checkbox" checked={state.ruleSet.allowDoubleHit} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowDoubleHit: event.target.checked } }))} />
+                允许双方得分
+              </label>
+              <label className="toggle-row">
+                <input type="checkbox" checked={state.ruleSet.allowNoHitRound} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowNoHitRound: event.target.checked } }))} />
+                允许无效回合
+              </label>
+              <label className="toggle-row">
+                <input type="checkbox" checked={state.ruleSet.allowDraw} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowDraw: event.target.checked } }))} />
+                允许平局
+              </label>
+              <label className="toggle-row">
+                <input type="checkbox" checked={state.ruleSet.enableOvertime} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, enableOvertime: event.target.checked } }))} />
+                启用加时
+              </label>
+            </div>
+            <RuleSummary ruleSet={state.ruleSet} />
           </section>
         )}
 
@@ -354,6 +432,7 @@ function App() {
                     <th>场次</th>
                     <th>对阵</th>
                     <th>比分</th>
+                    <th>警告/处罚</th>
                     <th>胜方</th>
                     <th>结束原因</th>
                   </tr>
@@ -364,6 +443,7 @@ function App() {
                       <td>{match.matchNo}</td>
                       <td>{match.red.name} vs {match.blue.name}</td>
                       <td>{match.redScore}:{match.blueScore}</td>
+                      <td>红 {formatWarningCounts(match.redWarnings, state.ruleSet)} / 罚 {match.redPenalties}；蓝 {formatWarningCounts(match.blueWarnings, state.ruleSet)} / 罚 {match.bluePenalties}</td>
                       <td>{getWinnerLabel(match.winner, match)}</td>
                       <td>{getEndReasonLabel(match.endReason)}</td>
                     </tr>
@@ -402,13 +482,17 @@ function statusLabel(status: Match["status"]) {
 function FighterPanel(props: {
   side: "red" | "blue";
   match: Match;
-  onScore: (side: "red" | "blue", delta: number) => void;
-  onPenalty: (side: "red" | "blue") => void;
+  ruleSet: RuleSet;
+  onHit: (side: "red" | "blue", zoneId: string) => void;
+  onWarning: (side: "red" | "blue", warningId: string) => void;
 }) {
   const fighter = props.side === "red" ? props.match.red : props.match.blue;
   const score = props.side === "red" ? props.match.redScore : props.match.blueScore;
   const penalties = props.side === "red" ? props.match.redPenalties : props.match.bluePenalties;
+  const warnings = props.side === "red" ? props.match.redWarnings : props.match.blueWarnings;
   const sideLabel = props.side === "red" ? "红方" : "蓝方";
+  const isLocked = props.match.status === "finished";
+  const isRoundMode = props.ruleSet.scoringMode === "round_limit";
 
   return (
     <div className={`fighter-panel ${props.side}`}>
@@ -416,14 +500,76 @@ function FighterPanel(props: {
       <h2>{fighter.name}</h2>
       <p>{fighter.club || "未填写单位"}</p>
       <strong>{score}</strong>
-      <div className="score-actions">
-        <button onClick={() => props.onScore(props.side, 1)}>+1</button>
-        <button onClick={() => props.onScore(props.side, -1)}>-1</button>
+      {!isRoundMode && (
+        <div className="zone-actions">
+          {props.ruleSet.hitZones.filter((zone) => zone.enabled).map((zone) => (
+            <button key={zone.id} onClick={() => props.onHit(props.side, zone.id)} disabled={isLocked}>
+              {zone.label} +{zone.score}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="warning-actions">
+        {props.ruleSet.warningLevels.map((warning) => (
+          <button key={warning.id} onClick={() => props.onWarning(props.side, warning.id)} disabled={isLocked}>
+            <ShieldAlert size={16} />
+            {warning.label}
+          </button>
+        ))}
       </div>
-      <button className="penalty-btn" onClick={() => props.onPenalty(props.side)}>
-        <ShieldAlert size={18} />
-        处罚 {penalties}
-      </button>
+      <p className="fighter-meta">处罚 {penalties} · 警告 {formatWarningCounts(warnings, props.ruleSet)}</p>
+    </div>
+  );
+}
+
+function RoundPanel(props: { match: Match; ruleSet: RuleSet; onRound: (result: "red" | "blue" | "double" | "none") => void }) {
+  const isLocked = props.match.status === "finished" || props.match.currentRound > props.ruleSet.maxRounds;
+  return (
+    <div className="round-panel">
+      <button onClick={() => props.onRound("red")} disabled={isLocked}>红方本回合得分</button>
+      <button onClick={() => props.onRound("blue")} disabled={isLocked}>蓝方本回合得分</button>
+      <button onClick={() => props.onRound("double")} disabled={isLocked || !props.ruleSet.allowDoubleHit}>双方得分</button>
+      <button onClick={() => props.onRound("none")} disabled={isLocked || !props.ruleSet.allowNoHitRound}>无效回合</button>
+      <small>已记录 {props.match.roundRecords.length} / {props.ruleSet.maxRounds} 回合</small>
+    </div>
+  );
+}
+
+function formatWarningCounts(warnings: Record<string, number>, ruleSet: RuleSet) {
+  const values = ruleSet.warningLevels
+    .map((warning) => `${warning.label}${warnings[warning.id] ?? 0}`)
+    .filter(Boolean);
+  return values.join(" / ");
+}
+
+function RuleSummary(props: { ruleSet: RuleSet }) {
+  return (
+    <div className="rule-summary">
+      <div>
+        <h2>计分模式</h2>
+        <p>{props.ruleSet.scoringMode === "round_limit" ? `限制回合模式：最多 ${props.ruleSet.maxRounds} 回合` : `目标分模式：先到 ${props.ruleSet.targetScore} 分`}</p>
+        <p>双方得分：{props.ruleSet.allowDoubleHit ? "允许" : "不允许"}；无效回合：{props.ruleSet.allowNoHitRound ? "允许" : "不允许"}</p>
+      </div>
+      <div>
+        <h2>部位分值</h2>
+        {props.ruleSet.hitZones.map((zone) => (
+          <p key={zone.id}>{zone.label}：{zone.score} 分，{zone.enabled ? "启用" : "停用"}</p>
+        ))}
+      </div>
+      <div>
+        <h2>警告分级</h2>
+        {props.ruleSet.warningLevels.map((warning) => (
+          <p key={warning.id}>
+            {warning.label}：扣 {Math.abs(warning.scoreDelta)} 分，{warning.isPenalty ? "计处罚" : "不计处罚"}，{warning.isForfeit ? "直接判负" : "不判负"}
+          </p>
+        ))}
+      </div>
+      <div>
+        <h2>转换机制</h2>
+        {props.ruleSet.warningConversions.map((item) => (
+          <p key={`${item.fromWarningId}-${item.toWarningId}`}>{item.fromWarningId} 累计 {item.count} 次转 {item.toWarningId}</p>
+        ))}
+      </div>
     </div>
   );
 }

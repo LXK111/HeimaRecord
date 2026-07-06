@@ -16,6 +16,7 @@ body {
 
 button,
 input,
+select,
 .file-button {
   font: inherit;
 }
@@ -137,7 +138,8 @@ h1 {
 .result-toolbar,
 .timer-actions,
 .finish-actions,
-.score-actions {
+.score-actions,
+.match-tools {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -216,6 +218,32 @@ h1 {
   gap: 20px;
 }
 
+.match-tools {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid #ddd3c2;
+  border-radius: 8px;
+  background: #fffaf2;
+}
+
+.match-tools button {
+  border: 0;
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: #18231f;
+  color: #fff;
+}
+
+.match-tools button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.match-tools span {
+  font-weight: 700;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(280px, 360px) minmax(220px, 1fr);
@@ -260,6 +288,8 @@ h1 {
 }
 
 .score-actions button,
+.zone-actions button,
+.warning-actions button,
 .penalty-btn,
 .finish-actions button,
 .result-actions button,
@@ -274,6 +304,37 @@ h1 {
 .score-actions button {
   min-width: 80px;
   background: rgba(0, 0, 0, 0.28);
+}
+
+.zone-actions,
+.warning-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.zone-actions button,
+.warning-actions button {
+  min-height: 44px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.warning-actions button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+
+.zone-actions button:disabled,
+.warning-actions button:disabled,
+.finish-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fighter-meta {
+  font-size: 14px;
 }
 
 .penalty-btn {
@@ -333,6 +394,24 @@ h1 {
   padding: 18px;
 }
 
+.post-adjustment {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #d9c6ac;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.post-adjustment h2 {
+  font-size: 18px;
+  margin-bottom: 6px;
+}
+
+.post-adjustment p {
+  color: #6d746f;
+}
+
 .event-log h2 {
   font-size: 18px;
   margin-bottom: 12px;
@@ -348,6 +427,11 @@ h1 {
 
 .event-row span {
   color: #7a6d5b;
+}
+
+.rules-panel {
+  display: grid;
+  gap: 20px;
 }
 
 .rules-grid {
@@ -366,12 +450,62 @@ h1 {
   color: #596760;
 }
 
-.field input {
+.field input,
+.field select {
   min-height: 42px;
   border: 1px solid #cfc5b6;
   border-radius: 6px;
   padding: 8px 10px;
   background: #fffdf8;
+}
+
+.round-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.round-panel button {
+  border: 0;
+  border-radius: 6px;
+  min-height: 44px;
+  padding: 10px;
+  background: #18231f;
+  color: #fff;
+}
+
+.round-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.round-panel small {
+  grid-column: 1 / -1;
+  color: #6d746f;
+}
+
+.rule-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.rule-summary > div {
+  padding: 16px;
+  border: 1px solid #e1d7c8;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.rule-summary h2 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+
+.rule-summary p {
+  color: #4f5d56;
+  margin-top: 6px;
 }
 
 .toggle-row {

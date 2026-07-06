@@ -1,4 +1,4 @@
-import { defaultRuleSet } from "../domain/rules";
+import { defaultRuleSet, normalizeMatch, normalizeRuleSet } from "../domain/rules";
 import type { TournamentState } from "../types";
 
 const DB_NAME = "heima-record-db";
@@ -30,12 +30,23 @@ export function createInitialState(): TournamentState {
   };
 }
 
+export function normalizeState(state: TournamentState): TournamentState {
+  const ruleSet = normalizeRuleSet(state.ruleSet);
+  return {
+    ...state,
+    ruleSet,
+    matches: (state.matches ?? []).map((match) => normalizeMatch(match, ruleSet)),
+    selectedMatchId: state.selectedMatchId ?? null,
+    updatedAt: state.updatedAt ?? new Date().toISOString(),
+  };
+}
+
 export async function loadState(): Promise<TournamentState> {
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readonly");
     const request = tx.objectStore(STORE_NAME).get(STATE_KEY);
-    request.onsuccess = () => resolve((request.result as TournamentState | undefined) ?? createInitialState());
+    request.onsuccess = () => resolve(normalizeState((request.result as TournamentState | undefined) ?? createInitialState()));
     request.onerror = () => reject(request.error);
   });
 }

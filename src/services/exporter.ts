@@ -14,11 +14,17 @@ function buildRows(matches: Match[]) {
     蓝方单位: match.blue.club,
     红方得分: match.redScore,
     蓝方得分: match.blueScore,
+    红方警告: Object.entries(match.redWarnings ?? {}).map(([id, count]) => `${id}:${count}`).join("；"),
+    蓝方警告: Object.entries(match.blueWarnings ?? {}).map(([id, count]) => `${id}:${count}`).join("；"),
     红方处罚: match.redPenalties,
     蓝方处罚: match.bluePenalties,
+    计分模式: match.roundRecords?.length ? "限制回合" : "目标分/基础计分",
+    回合记录: (match.roundRecords ?? []).map((round) => `第${round.roundNumber}回合:${round.result}`).join("；"),
     胜方: getWinnerLabel(match.winner, match),
     结束原因: getEndReasonLabel(match.endReason),
     状态: match.status,
+    申诉记录: match.events.filter((event) => event.type === "appeal_recorded").map((event) => event.label).join("；"),
+    赛后修正: match.events.filter((event) => event.type === "post_match_adjustment").map((event) => event.label).join("；"),
     记录: match.events.map((event) => event.label).join("；"),
   }));
 }

@@ -1,4 +1,5 @@
 import { downloadBlob } from "./download";
+import { normalizeState } from "./storage";
 import type { TournamentState } from "../types";
 
 const BACKUP_VERSION = 1;
@@ -43,7 +44,7 @@ export async function parseStateBackup(file: File): Promise<TournamentState> {
 
   // 恢复时更新时间戳，确保后续自动保存会覆盖当前浏览器本地状态。
   return {
-    ...payload.state,
+    ...normalizeState(payload.state),
     updatedAt: new Date().toISOString(),
   };
 }
