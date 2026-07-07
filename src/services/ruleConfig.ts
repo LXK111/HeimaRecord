@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import Papa from "papaparse";
 import { defaultRuleSet, normalizeRuleSet } from "../domain/rules";
 import { downloadBlob } from "./download";
-import type { HitZone, RuleSet, WarningConversion, WarningLevel } from "../types";
+import type { HitZone, PenaltyStopResult, RuleSet, WarningConversion, WarningLevel } from "../types";
 
 type Row = Record<string, unknown>;
 
@@ -25,6 +25,14 @@ function parseBoolean(value: string) {
 function parseNumber(value: string, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseStopResult(value: string): PenaltyStopResult {
+  const normalized = value.toLowerCase();
+  if (normalized === "self_win" || value === "本人胜") return "self_win";
+  if (normalized === "draw" || value === "平局") return "draw";
+  if (normalized === "manual" || value === "手动判定") return "manual";
+  return "opponent_win";
 }
 
 function rowsToBaseRules(rows: Row[], currentRuleSet: RuleSet): Partial<RuleSet> {
@@ -57,13 +65,18 @@ function rowsToHitZones(rows: Row[]): HitZone[] {
 
 function rowsToWarningLevels(rows: Row[]): WarningLevel[] {
   return rows
-    .map((row) => ({
-      id: pick(row, ["警告ID", "id", "warningId"]),
-      label: pick(row, ["警告名称", "名称", "label", "warningLabel"]),
-      scoreDelta: -Math.abs(parseNumber(pick(row, ["扣分", "scoreDelta"]), 0)),
-      isPenalty: parseBoolean(pick(row, ["是否处罚", "isPenalty"])),
-      isForfeit: parseBoolean(pick(row, ["是否判负", "isForfeit"])),
-    }))
+    .map((row) => {
+      const isForfeit = parseBoolean(pick(row, ["是否判负", "isForfeit"]));
+      return {
+        id: pick(row, ["警告ID", "id", "warningId"]),
+        label: pick(row, ["警告名称", "名称", "label", "warningLabel"]),
+        scoreDelta: -Math.abs(parseNumber(pick(row, ["扣分", "scoreDelta"]), 0)),
+        isPenalty: parseBoolean(pick(row, ["是否处罚", "isPenalty"])),
+        isForfeit,
+        stopsMatch: parseBoolean(pick(row, ["是否中止比赛", "stopsMatch"])) || isForfeit,
+        stopResult: parseStopResult(pick(row, ["中止结果", "stopResult"])),
+      };
+    })
     .filter((item) => item.id && item.label);
 }
 
@@ -164,6 +177,8 @@ export async function exportRuleSetToExcel(ruleSet: RuleSet, filename = "heima-r
     { header: "扣分", key: "scoreDelta", width: 10 },
     { header: "是否处罚", key: "isPenalty", width: 12 },
     { header: "是否判负", key: "isForfeit", width: 12 },
+    { header: "是否中止比赛", key: "stopsMatch", width: 16 },
+    { header: "中止结果", key: "stopResult", width: 16 },
   ];
   ruleSet.warningLevels.forEach((item) =>
     warningSheet.addRow({
@@ -171,6 +186,8 @@ export async function exportRuleSetToExcel(ruleSet: RuleSet, filename = "heima-r
       scoreDelta: Math.abs(item.scoreDelta),
       isPenalty: item.isPenalty ? "是" : "否",
       isForfeit: item.isForfeit ? "是" : "否",
+      stopsMatch: item.stopsMatch ? "是" : "否",
+      stopResult: stopResultText(item.stopResult),
     })
   );
 
@@ -187,3 +204,13 @@ export async function exportRuleSetToExcel(ruleSet: RuleSet, filename = "heima-r
 }
 
 export const templateRuleSet = defaultRuleSet;
+
+function stopResultText(result: PenaltyStopResult) {
+  const labels: Record<PenaltyStopResult, string> = {
+    opponent_win: "对方胜",
+    self_win: "本人胜",
+    draw: "平局",
+    manual: "手动判定",
+  };
+  return labels[result];
+}

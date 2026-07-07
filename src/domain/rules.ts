@@ -1,4 +1,4 @@
-import type { Match, MatchEndReason, MatchSnapshot, RoundRecord, RuleSet, WarningLevel, Winner } from "../types";
+import type { AdjudicationInput, Match, MatchEndReason, MatchSide, MatchSnapshot, RoundRecord, RuleSet, WarningLevel, Winner } from "../types";
 
 export const defaultRuleSet: RuleSet = {
   scoringMode: "target_score",
@@ -19,10 +19,10 @@ export const defaultRuleSet: RuleSet = {
     { id: "leg", label: "腿部", score: 1, enabled: true },
   ],
   warningLevels: [
-    { id: "verbal", label: "口头警告", scoreDelta: 0, isPenalty: false, isForfeit: false },
-    { id: "yellow", label: "黄牌", scoreDelta: 0, isPenalty: false, isForfeit: false },
-    { id: "red", label: "红牌", scoreDelta: -1, isPenalty: true, isForfeit: false },
-    { id: "black", label: "黑牌", scoreDelta: 0, isPenalty: true, isForfeit: true },
+    { id: "verbal", label: "口头警告", scoreDelta: 0, isPenalty: false, isForfeit: false, stopsMatch: false, stopResult: "opponent_win" },
+    { id: "yellow", label: "黄牌", scoreDelta: 0, isPenalty: false, isForfeit: false, stopsMatch: false, stopResult: "opponent_win" },
+    { id: "red", label: "红牌", scoreDelta: -1, isPenalty: true, isForfeit: false, stopsMatch: false, stopResult: "opponent_win" },
+    { id: "black", label: "黑牌", scoreDelta: 0, isPenalty: true, isForfeit: true, stopsMatch: true, stopResult: "opponent_win" },
   ],
   warningConversions: [
     { fromWarningId: "yellow", count: 2, toWarningId: "red" },
@@ -50,12 +50,21 @@ export function createMatchEvent(matchId: string, type: Match["events"][number][
 }
 
 export function normalizeRuleSet(ruleSet?: Partial<RuleSet>): RuleSet {
+  const warningLevels = ruleSet?.warningLevels?.length ? ruleSet.warningLevels : defaultRuleSet.warningLevels;
   return {
     ...defaultRuleSet,
     ...ruleSet,
     hitZones: ruleSet?.hitZones?.length ? ruleSet.hitZones : defaultRuleSet.hitZones,
-    warningLevels: ruleSet?.warningLevels?.length ? ruleSet.warningLevels : defaultRuleSet.warningLevels,
+    warningLevels: warningLevels.map(normalizeWarningLevel),
     warningConversions: ruleSet?.warningConversions?.length ? ruleSet.warningConversions : defaultRuleSet.warningConversions,
+  };
+}
+
+function normalizeWarningLevel(warning: WarningLevel): WarningLevel {
+  return {
+    ...warning,
+    stopsMatch: warning.stopsMatch ?? warning.isForfeit ?? false,
+    stopResult: warning.stopResult ?? "opponent_win",
   };
 }
 
@@ -147,8 +156,10 @@ export function restorePreviousSnapshot(match: Match): Match {
     ...previous,
     redWarnings: { ...previous.redWarnings },
     blueWarnings: { ...previous.blueWarnings },
+    remainingSeconds: match.remainingSeconds,
+    isOvertime: match.isOvertime,
     history: history.slice(0, -1),
-    events: [...previous.events, createMatchEvent(match.id, "undo_applied", "撤销上一步操作")],
+    events: [...previous.events, createMatchEvent(match.id, "undo_applied", `撤销上一步操作，计时保留为${formatTime(match.remainingSeconds)}`)],
   });
 }
 
@@ -185,14 +196,14 @@ export function evaluateAfterScore(match: Match, ruleSet: RuleSet): Match {
 
   const winner = resolveWinner(match.redScore, match.blueScore, ruleSet.allowDraw);
   if (!winner) return match;
-  return finishMatch(match, winner, winner === "draw" ? "draw" : "target_score");
+  return finishMatch(match, winner, winner === "draw" ? "draw" : "target_score", false);
 }
 
 export function recordRoundResult(match: Match, result: RoundRecord["result"], ruleSet: RuleSet): Match {
   if (match.status === "finished" || ruleSet.scoringMode !== "round_limit") return match;
   if (result === "double" && !ruleSet.allowDoubleHit) return match;
   if (result === "none" && !ruleSet.allowNoHitRound) return match;
-  if (match.currentRound > ruleSet.maxRounds) return match;
+  if (!match.isOvertime && match.currentRound > ruleSet.maxRounds) return match;
 
   const redScoreDelta = result === "red" || result === "double" ? 1 : 0;
   const blueScoreDelta = result === "blue" || result === "double" ? 1 : 0;
@@ -219,9 +230,10 @@ export function recordRoundResult(match: Match, result: RoundRecord["result"], r
     events: [...match.events, createMatchEvent(match.id, "round_recorded", `第${match.currentRound}回合：${labelMap[result]}`)],
   });
 
-  if (next.roundRecords.length >= ruleSet.maxRounds) {
+  if (!next.isOvertime && next.roundRecords.length >= ruleSet.maxRounds) {
     const winner = resolveWinner(next.redScore, next.blueScore, ruleSet.allowDraw);
-    if (winner) return finishMatch(next, winner, winner === "draw" ? "draw" : "round_limit");
+    if (winner) return finishMatch(next, winner, winner === "draw" ? "draw" : "round_limit", false);
+    if (ruleSet.enableOvertime) return enterOvertime(next, ruleSet, "回合数打满，比分相同，进入加时");
     return touch({
       ...next,
       status: "paused",
@@ -230,6 +242,69 @@ export function recordRoundResult(match: Match, result: RoundRecord["result"], r
   }
 
   return next;
+}
+
+export function recordAdjudication(match: Match, input: AdjudicationInput, ruleSet: RuleSet): Match {
+  if (match.status === "finished") return match;
+  if (ruleSet.scoringMode === "round_limit" && !match.isOvertime && match.currentRound > ruleSet.maxRounds) return match;
+
+  const redScoreDelta = Math.max(0, input.redScoreDelta);
+  const blueScoreDelta = Math.max(0, input.blueScoreDelta);
+  const shouldRecordRound = ruleSet.scoringMode === "round_limit";
+  const result = getRoundResult(redScoreDelta, blueScoreDelta);
+  if (shouldRecordRound && result === "double" && !ruleSet.allowDoubleHit) return match;
+  if (shouldRecordRound && result === "none" && !ruleSet.allowNoHitRound) return match;
+
+  let next = touch({
+    ...withHistory(match),
+    redScore: match.redScore + redScoreDelta,
+    blueScore: match.blueScore + blueScoreDelta,
+    events: [
+      ...match.events,
+      createMatchEvent(match.id, "score_changed", `综合判定：红方 +${redScoreDelta}，蓝方 +${blueScoreDelta}`),
+    ],
+  });
+
+  if (shouldRecordRound) {
+    const roundRecord: RoundRecord = {
+      id: crypto.randomUUID(),
+      roundNumber: match.currentRound,
+      result,
+      redScoreDelta,
+      blueScoreDelta,
+      at: new Date().toISOString(),
+    };
+    next = touch({
+      ...next,
+      currentRound: match.currentRound + 1,
+      roundRecords: [...match.roundRecords, roundRecord],
+      events: [...next.events, createMatchEvent(match.id, "round_recorded", `第${match.currentRound}回合综合判定已记录`)],
+    });
+  }
+
+  next = applyOptionalWarning(next, "red", input.redWarningId, ruleSet);
+  next = applyOptionalWarning(next, "blue", input.blueWarningId, ruleSet);
+  if (next.status === "finished") return next;
+
+  if (shouldRecordRound && !next.isOvertime && next.roundRecords.length >= ruleSet.maxRounds) {
+    const winner = resolveWinner(next.redScore, next.blueScore, ruleSet.allowDraw);
+    if (winner) return finishMatch(next, winner, winner === "draw" ? "draw" : "round_limit", false);
+    if (ruleSet.enableOvertime) return enterOvertime(next, ruleSet, "回合数打满，比分相同，进入加时");
+    return touch({
+      ...next,
+      status: "paused",
+      events: [...next.events, createMatchEvent(match.id, "timer_paused", "回合数打满，比分相同，需要手动判定")],
+    });
+  }
+
+  return evaluateAfterScore(next, ruleSet);
+}
+
+function getRoundResult(redScoreDelta: number, blueScoreDelta: number): RoundRecord["result"] {
+  if (redScoreDelta > 0 && blueScoreDelta > 0) return "double";
+  if (redScoreDelta > 0) return "red";
+  if (blueScoreDelta > 0) return "blue";
+  return "none";
 }
 
 export function recordHit(match: Match, side: "red" | "blue", zoneId: string, ruleSet: RuleSet): Match {
@@ -254,6 +329,13 @@ export function applyWarning(match: Match, side: "red" | "blue", warningId: stri
   return applyWarningLevel(withHistory(match), side, warning, ruleSet, true);
 }
 
+function applyOptionalWarning(match: Match, side: MatchSide, warningId: string, ruleSet: RuleSet): Match {
+  if (!warningId || match.status === "finished") return match;
+  const warning = ruleSet.warningLevels.find((item) => item.id === warningId);
+  if (!warning) return match;
+  return applyWarningLevel(match, side, warning, ruleSet, true);
+}
+
 function applyWarningLevel(match: Match, side: "red" | "blue", warning: WarningLevel, ruleSet: RuleSet, allowConversion: boolean): Match {
   const sideLabel = side === "red" ? "红方" : "蓝方";
   const warningKey = side === "red" ? "redWarnings" : "blueWarnings";
@@ -271,8 +353,12 @@ function applyWarningLevel(match: Match, side: "red" | "blue", warning: WarningL
     events: [...match.events, createMatchEvent(match.id, "warning_added", `${sideLabel}${warning.label}${warning.scoreDelta ? ` ${warning.scoreDelta}分` : ""}`)],
   });
 
-  if (warning.isForfeit || (ruleSet.maxPenaltyCount > 0 && nextPenaltyCount >= ruleSet.maxPenaltyCount)) {
-    return finishMatch(next, side === "red" ? "blue" : "red", "forfeit");
+  if (warning.stopsMatch || warning.isForfeit) {
+    return stopMatchByPenalty(next, side, warning);
+  }
+
+  if (ruleSet.maxPenaltyCount > 0 && nextPenaltyCount >= ruleSet.maxPenaltyCount) {
+    return finishMatch(next, side === "red" ? "blue" : "red", "forfeit", false);
   }
 
   // 转换规则只在原始警告后触发一次链式判断，避免无限循环或重复转换。
@@ -294,6 +380,26 @@ function applyWarningLevel(match: Match, side: "red" | "blue", warning: WarningL
   }
 
   return next;
+}
+
+function stopMatchByPenalty(match: Match, side: MatchSide, warning: WarningLevel): Match {
+  const winner = resolvePenaltyStopWinner(side, warning);
+  if (!winner) {
+    return touch({
+      ...match,
+      status: "paused",
+      endReason: "forfeit",
+      events: [...match.events, createMatchEvent(match.id, "timer_paused", `${warning.label}触发中止，等待手动判定`)],
+    });
+  }
+  return finishMatch(match, winner, winner === "draw" ? "draw" : "forfeit", false);
+}
+
+function resolvePenaltyStopWinner(side: MatchSide, warning: WarningLevel): Winner {
+  if (warning.stopResult === "draw") return "draw";
+  if (warning.stopResult === "manual") return null;
+  if (warning.stopResult === "self_win") return side;
+  return side === "red" ? "blue" : "red";
 }
 
 export function recordAppeal(match: Match): Match {
@@ -358,23 +464,12 @@ export function evaluateTimeUp(match: Match, ruleSet: RuleSet): Match {
   const winner = resolveWinner(match.redScore, match.blueScore, ruleSet.allowDraw);
   if (winner) return finishMatch(match, winner, winner === "draw" ? "draw" : "time_up");
 
-  if (ruleSet.scoringMode === "round_limit") {
-    return touch({
-      ...match,
-      status: "paused",
-      events: [...match.events, createMatchEvent(match.id, "timer_paused", "时间结束，比分相同，需要手动判定")],
-    });
+  if (ruleSet.enableOvertime && !match.isOvertime) {
+    return enterOvertime(match, ruleSet, "常规时间结束，比分相同，进入加时");
   }
 
-  // 平分且不允许平局时，加时是唯一能继续产生结果的规则分支。
-  if (ruleSet.enableOvertime && !match.isOvertime) {
-    return touch({
-      ...match,
-      status: "paused",
-      isOvertime: true,
-      remainingSeconds: ruleSet.overtimeSeconds,
-      events: [...match.events, createMatchEvent(match.id, "timer_paused", "常规时间结束，进入加时")],
-    });
+  if (ruleSet.allowDraw) {
+    return finishMatch(match, "draw", "draw");
   }
 
   return touch({
@@ -384,9 +479,20 @@ export function evaluateTimeUp(match: Match, ruleSet: RuleSet): Match {
   });
 }
 
-export function finishMatch(match: Match, winner: Winner, reason: MatchEndReason): Match {
+function enterOvertime(match: Match, ruleSet: RuleSet, label: string): Match {
   return touch({
-    ...withHistory(match),
+    ...match,
+    status: "paused",
+    isOvertime: true,
+    remainingSeconds: Math.max(1, ruleSet.overtimeSeconds),
+    events: [...match.events, createMatchEvent(match.id, "timer_paused", label)],
+  });
+}
+
+export function finishMatch(match: Match, winner: Winner, reason: MatchEndReason, recordHistory = true): Match {
+  const base = recordHistory ? withHistory(match) : match;
+  return touch({
+    ...base,
     status: "finished",
     winner,
     endReason: reason,

@@ -4,6 +4,10 @@ export type Winner = "red" | "blue" | "draw" | null;
 
 export type ScoringMode = "target_score" | "round_limit";
 
+export type MatchSide = "red" | "blue";
+
+export type PenaltyStopResult = "opponent_win" | "self_win" | "draw" | "manual";
+
 export type MatchEndReason =
   | "target_score"
   | "round_limit"
@@ -31,6 +35,8 @@ export interface WarningLevel {
   scoreDelta: number;
   isPenalty: boolean;
   isForfeit: boolean;
+  stopsMatch: boolean;
+  stopResult: PenaltyStopResult;
 }
 
 export interface WarningConversion {
@@ -86,6 +92,13 @@ export interface RoundRecord {
   redScoreDelta: number;
   blueScoreDelta: number;
   at: string;
+}
+
+export interface AdjudicationInput {
+  redScoreDelta: number;
+  blueScoreDelta: number;
+  redWarningId: string;
+  blueWarningId: string;
 }
 
 export interface MatchSnapshot {

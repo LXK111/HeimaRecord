@@ -58,7 +58,7 @@ baseSheet.columns = [
   { key: "允许双方得分", value: "是", description: "限制回合模式使用" },
   { key: "允许无效回合", value: "是", description: "限制回合模式使用" },
   { key: "允许平局", value: "否", description: "时间到或回合打满后使用" },
-  { key: "启用加时", value: "是", description: "目标分模式使用" },
+  { key: "启用加时", value: "是", description: "平分且未结束时使用" },
   { key: "加时时长", value: 60, description: "秒" },
   { key: "处罚判负次数", value: 3, description: "处罚累计次数" },
 ].forEach((row) => baseSheet.addRow(row));
@@ -84,12 +84,14 @@ warningSheet.columns = [
   { header: "扣分", key: "scoreDelta", width: 10 },
   { header: "是否处罚", key: "isPenalty", width: 12 },
   { header: "是否判负", key: "isForfeit", width: 12 },
+  { header: "是否中止比赛", key: "stopsMatch", width: 16 },
+  { header: "中止结果", key: "stopResult", width: 16 },
 ];
 [
-  { id: "verbal", label: "口头警告", scoreDelta: 0, isPenalty: "否", isForfeit: "否" },
-  { id: "yellow", label: "黄牌", scoreDelta: 0, isPenalty: "否", isForfeit: "否" },
-  { id: "red", label: "红牌", scoreDelta: 1, isPenalty: "是", isForfeit: "否" },
-  { id: "black", label: "黑牌", scoreDelta: 0, isPenalty: "是", isForfeit: "是" },
+  { id: "verbal", label: "口头警告", scoreDelta: 0, isPenalty: "否", isForfeit: "否", stopsMatch: "否", stopResult: "对方胜" },
+  { id: "yellow", label: "黄牌", scoreDelta: 0, isPenalty: "否", isForfeit: "否", stopsMatch: "否", stopResult: "对方胜" },
+  { id: "red", label: "红牌", scoreDelta: 1, isPenalty: "是", isForfeit: "否", stopsMatch: "否", stopResult: "对方胜" },
+  { id: "black", label: "黑牌", scoreDelta: 0, isPenalty: "是", isForfeit: "是", stopsMatch: "是", stopResult: "对方胜" },
 ].forEach((row) => warningSheet.addRow(row));
 
 const conversionSheet = ruleWorkbook.addWorksheet("警告转换");

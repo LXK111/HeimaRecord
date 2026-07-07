@@ -22,6 +22,7 @@ import {
   getEndReasonLabel,
   getWinnerLabel,
   recordAppeal,
+  recordAdjudication,
   recordHit,
   recordRoundResult,
   resetMatch,
@@ -33,9 +34,14 @@ import { exportMatchesToCsv, exportMatchesToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
 import { createInitialState, loadState, saveState } from "./services/storage";
-import type { Match, RuleSet, TournamentState, Winner } from "./types";
+import type { AdjudicationInput, Match, RuleSet, TournamentState, Winner } from "./types";
 
 type ViewKey = "import" | "matches" | "console" | "rules" | "results";
+
+type MatchGroup = {
+  name: string;
+  matches: Match[];
+};
 
 function App() {
   const [state, setState] = useState<TournamentState>(createInitialState);
@@ -45,12 +51,19 @@ function App() {
   const [backupMessage, setBackupMessage] = useState("");
   const [ruleMessage, setRuleMessage] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
+  const [adjudication, setAdjudication] = useState<AdjudicationInput>({
+    redScoreDelta: 0,
+    blueScoreDelta: 0,
+    redWarningId: "",
+    blueWarningId: "",
+  });
   const saveTimer = useRef<number | null>(null);
 
   const selectedMatch = useMemo(
     () => state.matches.find((match) => match.id === state.selectedMatchId) ?? state.matches[0] ?? null,
     [state.matches, state.selectedMatchId]
   );
+  const groupedMatches = useMemo(() => groupMatchesByName(state.matches), [state.matches]);
 
   useEffect(() => {
     loadState()
@@ -164,6 +177,11 @@ function App() {
     updateSelectedMatch((match) => applyWarning(match, side, warningId, state.ruleSet));
   }
 
+  function submitAdjudication() {
+    updateSelectedMatch((match) => recordAdjudication(match, adjudication, state.ruleSet));
+    setAdjudication({ redScoreDelta: 0, blueScoreDelta: 0, redWarningId: "", blueWarningId: "" });
+  }
+
   function undoLastAction() {
     updateSelectedMatch((match) => restorePreviousSnapshot(match));
   }
@@ -254,22 +272,37 @@ function App() {
         )}
 
         {activeView === "matches" && (
-          <section className="match-grid">
-            {state.matches.map((match) => (
-              <button
-                key={match.id}
-                className={`match-card ${match.id === selectedMatch?.id ? "selected" : ""}`}
-                onClick={() => {
-                  patchState((current) => ({ ...current, selectedMatchId: match.id }));
-                  setActiveView("console");
-                }}
-              >
-                <span>{match.groupName} · {match.piste}</span>
-                <strong>第 {match.matchNo} 场</strong>
-                <p>{match.red.name} vs {match.blue.name}</p>
-                <small>{statusLabel(match.status)} · 胜方：{getWinnerLabel(match.winner, match)}</small>
-              </button>
-            ))}
+          <section className="match-groups">
+            {groupedMatches.map((group) => {
+              const finishedCount = group.matches.filter((match) => match.status === "finished").length;
+              return (
+                <section key={group.name} className="match-group">
+                  <div className="match-group-header">
+                    <div>
+                      <h2>{group.name}</h2>
+                      <p>{group.matches.length} 场比赛 · 已结束 {finishedCount} 场</p>
+                    </div>
+                  </div>
+                  <div className="match-group-grid">
+                    {group.matches.map((match) => (
+                      <button
+                        key={match.id}
+                        className={`match-card ${match.id === selectedMatch?.id ? "selected" : ""}`}
+                        onClick={() => {
+                          patchState((current) => ({ ...current, selectedMatchId: match.id }));
+                          setActiveView("console");
+                        }}
+                      >
+                        <span>{match.groupName || "未分组"} · {match.piste}</span>
+                        <strong>第 {match.matchNo} 场</strong>
+                        <p>{match.red.name} vs {match.blue.name}</p>
+                        <small>{statusLabel(match.status)} · 胜方：{getWinnerLabel(match.winner, match)}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
             {state.matches.length === 0 && <EmptyState text="还没有场次，请先导入 Excel 或 CSV。" />}
           </section>
         )}
@@ -286,7 +319,7 @@ function App() {
               <div className="scoreboard">
                 <FighterPanel side="red" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
                 <div className="timer-panel">
-                  <span>{state.ruleSet.scoringMode === "round_limit" ? `第 ${Math.min(selectedMatch.currentRound, state.ruleSet.maxRounds)} / ${state.ruleSet.maxRounds} 回合` : selectedMatch.isOvertime ? "加时" : "常规时间"}</span>
+                  <span>{getTimerLabel(selectedMatch, state.ruleSet)}</span>
                   <strong>{formatTime(selectedMatch.remainingSeconds)}</strong>
                   {state.ruleSet.scoringMode === "round_limit" && (
                     <RoundPanel match={selectedMatch} ruleSet={state.ruleSet} onRound={addRoundResult} />
@@ -311,6 +344,13 @@ function App() {
                 </div>
                 <FighterPanel side="blue" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
               </div>
+              <ComprehensiveJudgement
+                match={selectedMatch}
+                ruleSet={state.ruleSet}
+                value={adjudication}
+                onChange={setAdjudication}
+                onSubmit={submitAdjudication}
+              />
               {selectedMatch.status === "finished" && (
                 <div className="post-adjustment">
                   <div>
@@ -479,6 +519,72 @@ function statusLabel(status: Match["status"]) {
   return labels[status];
 }
 
+function groupMatchesByName(matches: Match[]): MatchGroup[] {
+  const groups = new Map<string, Match[]>();
+  // 按导入顺序创建分组，避免现场排场顺序被展示层重新打乱。
+  matches.forEach((match) => {
+    const groupName = match.groupName.trim() || "未分组";
+    groups.set(groupName, [...(groups.get(groupName) ?? []), match]);
+  });
+  return Array.from(groups, ([name, groupMatches]) => ({ name, matches: groupMatches }));
+}
+
+function getTimerLabel(match: Match, ruleSet: RuleSet) {
+  if (ruleSet.scoringMode !== "round_limit") return match.isOvertime ? "加时" : "常规时间";
+  if (match.isOvertime) return `加时第 ${Math.max(1, match.currentRound - ruleSet.maxRounds)} 回合`;
+  return `第 ${Math.min(match.currentRound, ruleSet.maxRounds)} / ${ruleSet.maxRounds} 回合`;
+}
+
+function ComprehensiveJudgement(props: {
+  match: Match;
+  ruleSet: RuleSet;
+  value: AdjudicationInput;
+  onChange: (value: AdjudicationInput) => void;
+  onSubmit: () => void;
+}) {
+  const isRoundExhausted = props.ruleSet.scoringMode === "round_limit" && !props.match.isOvertime && props.match.currentRound > props.ruleSet.maxRounds;
+  const isLocked = props.match.status === "finished" || isRoundExhausted;
+  const update = (patch: Partial<AdjudicationInput>) => props.onChange({ ...props.value, ...patch });
+
+  return (
+    <div className="adjudication-panel">
+      <div>
+        <h2>综合判定</h2>
+        <p>{props.ruleSet.scoringMode === "round_limit" ? "按本回合一次提交双方得分和判罚。" : "一次提交双方得分和判罚。"}</p>
+      </div>
+      <div className="adjudication-grid">
+        <label className="field">
+          <span>红方得分</span>
+          <input type="number" min={0} value={props.value.redScoreDelta} onChange={(event) => update({ redScoreDelta: Number(event.target.value) })} />
+        </label>
+        <label className="field">
+          <span>蓝方得分</span>
+          <input type="number" min={0} value={props.value.blueScoreDelta} onChange={(event) => update({ blueScoreDelta: Number(event.target.value) })} />
+        </label>
+        <label className="field">
+          <span>红方警告</span>
+          <select value={props.value.redWarningId} onChange={(event) => update({ redWarningId: event.target.value })}>
+            <option value="">无</option>
+            {props.ruleSet.warningLevels.map((warning) => (
+              <option key={warning.id} value={warning.id}>{warning.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>蓝方警告</span>
+          <select value={props.value.blueWarningId} onChange={(event) => update({ blueWarningId: event.target.value })}>
+            <option value="">无</option>
+            {props.ruleSet.warningLevels.map((warning) => (
+              <option key={warning.id} value={warning.id}>{warning.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <button className="primary-action" onClick={props.onSubmit} disabled={isLocked}>提交综合判定</button>
+    </div>
+  );
+}
+
 function FighterPanel(props: {
   side: "red" | "blue";
   match: Match;
@@ -523,14 +629,14 @@ function FighterPanel(props: {
 }
 
 function RoundPanel(props: { match: Match; ruleSet: RuleSet; onRound: (result: "red" | "blue" | "double" | "none") => void }) {
-  const isLocked = props.match.status === "finished" || props.match.currentRound > props.ruleSet.maxRounds;
+  const isLocked = props.match.status === "finished" || (!props.match.isOvertime && props.match.currentRound > props.ruleSet.maxRounds);
   return (
     <div className="round-panel">
       <button onClick={() => props.onRound("red")} disabled={isLocked}>红方本回合得分</button>
       <button onClick={() => props.onRound("blue")} disabled={isLocked}>蓝方本回合得分</button>
       <button onClick={() => props.onRound("double")} disabled={isLocked || !props.ruleSet.allowDoubleHit}>双方得分</button>
       <button onClick={() => props.onRound("none")} disabled={isLocked || !props.ruleSet.allowNoHitRound}>无效回合</button>
-      <small>已记录 {props.match.roundRecords.length} / {props.ruleSet.maxRounds} 回合</small>
+      <small>{props.match.isOvertime ? `已进入加时，累计记录 ${props.match.roundRecords.length} 回合` : `已记录 ${props.match.roundRecords.length} / ${props.ruleSet.maxRounds} 回合`}</small>
     </div>
   );
 }
@@ -560,7 +666,7 @@ function RuleSummary(props: { ruleSet: RuleSet }) {
         <h2>警告分级</h2>
         {props.ruleSet.warningLevels.map((warning) => (
           <p key={warning.id}>
-            {warning.label}：扣 {Math.abs(warning.scoreDelta)} 分，{warning.isPenalty ? "计处罚" : "不计处罚"}，{warning.isForfeit ? "直接判负" : "不判负"}
+            {warning.label}：扣 {Math.abs(warning.scoreDelta)} 分，{warning.isPenalty ? "计处罚" : "不计处罚"}，{warning.stopsMatch || warning.isForfeit ? `中止：${stopResultLabel(warning.stopResult)}` : "不中止"}
           </p>
         ))}
       </div>
@@ -572,6 +678,16 @@ function RuleSummary(props: { ruleSet: RuleSet }) {
       </div>
     </div>
   );
+}
+
+function stopResultLabel(result: RuleSet["warningLevels"][number]["stopResult"]) {
+  const labels: Record<RuleSet["warningLevels"][number]["stopResult"], string> = {
+    opponent_win: "对方胜",
+    self_win: "本人胜",
+    draw: "平局",
+    manual: "手动判定",
+  };
+  return labels[result];
 }
 
 function NumberField(props: { label: string; value: number; onChange: (value: number) => void }) {
