@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
+    "release:docs": "python3 scripts/generate-release-pdfs.py",
     "release": "npm run build && node scripts/prepare-release.mjs && npm run release:verify",
     "release:verify": "node scripts/verify-release.mjs"
   },

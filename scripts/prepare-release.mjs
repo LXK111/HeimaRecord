@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ExcelJS from "exceljs";
@@ -6,6 +7,22 @@ import ExcelJS from "exceljs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseRoot = resolve(root, "release");
 const releaseDir = resolve(releaseRoot, "heima-record");
+const releaseAssetsDir = resolve(root, "release-assets");
+
+const docsManifest = JSON.parse(
+  readFileSync(resolve(releaseAssetsDir, "release-docs-manifest.json"), "utf8")
+);
+
+docsManifest.documents.forEach(({ source, pdf, sha256 }) => {
+  const sourcePath = resolve(root, source);
+  const actualHash = createHash("sha256").update(readFileSync(sourcePath)).digest("hex");
+  if (actualHash !== sha256) {
+    throw new Error(`${source} 已修改，请先执行 npm run release:docs 更新 ${pdf}。`);
+  }
+  if (!existsSync(resolve(releaseAssetsDir, pdf))) {
+    throw new Error(`缺少 PDF 资产：${pdf}，请先执行 npm run release:docs。`);
+  }
+});
 
 if (existsSync(releaseDir)) {
   rmSync(releaseDir, { recursive: true, force: true });
@@ -34,13 +51,11 @@ const singleFileHtml = html
   .replace(scriptMatch[0], () => `<script type="module">\n${script}\n</script>`);
 
 writeFileSync(resolve(releaseDir, "index.html"), singleFileHtml);
-copyFileSync(resolve(root, "docs", "使用说明.md"), resolve(releaseDir, "使用说明.md"));
-copyFileSync(
-  resolve(root, "docs", "final_document", "赛事现场验收与交付说明.md"),
-  resolve(releaseDir, "赛事验收清单.md")
-);
+docsManifest.documents.forEach(({ pdf }) => {
+  copyFileSync(resolve(releaseAssetsDir, pdf), resolve(releaseDir, pdf));
+});
 
-const sampleCsv = readFileSync(resolve(root, "release-assets", "示例导入模板.csv"), "utf8");
+const sampleCsv = readFileSync(resolve(releaseAssetsDir, "示例导入模板.csv"), "utf8");
 writeFileSync(
   resolve(releaseDir, "示例导入模板.csv"),
   sampleCsv.startsWith("\uFEFF") ? sampleCsv : `\uFEFF${sampleCsv}`,
@@ -110,5 +125,53 @@ conversionSheet.columns = [
 ].forEach((row) => conversionSheet.addRow(row));
 
 await ruleWorkbook.xlsx.writeFile(resolve(releaseDir, "规则配置模板.xlsx"));
+
+const playerClubs = ["黑马测试队A", "青锋测试队B", "长风测试队C", "云剑测试队D"];
+
+async function writePlayerTestWorkbook(playerCount) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "liuxiaoke";
+  workbook.created = new Date("2026-07-21T00:00:00+08:00");
+
+  const sheet = workbook.addWorksheet("选手名单", {
+    views: [{ state: "frozen", ySplit: 1, showGridLines: false }],
+  });
+  sheet.columns = [
+    { header: "姓名", key: "name", width: 18 },
+    { header: "单位", key: "club", width: 18 },
+    { header: "种子", key: "seed", width: 10 },
+  ];
+  sheet.autoFilter = `A1:C${playerCount + 1}`;
+  sheet.getRow(1).height = 26;
+  sheet.getRow(1).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF18231F" } };
+    cell.alignment = { vertical: "middle", horizontal: "center" };
+  });
+
+  for (let index = 1; index <= playerCount; index += 1) {
+    const row = sheet.addRow({
+      name: `测试选手${String(index).padStart(2, "0")}`,
+      club: playerClubs[(index - 1) % playerClubs.length],
+      seed: index,
+    });
+    row.height = 22;
+    row.eachCell((cell, columnNumber) => {
+      cell.alignment = {
+        vertical: "middle",
+        horizontal: columnNumber === 3 ? "center" : "left",
+      };
+      cell.border = { bottom: { style: "hair", color: { argb: "FFD9DED9" } } };
+      if (index % 2 === 0) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F7F5" } };
+      }
+    });
+  }
+
+  await workbook.xlsx.writeFile(resolve(releaseDir, `${playerCount}人选手测试数据.xlsx`));
+}
+
+await writePlayerTestWorkbook(16);
+await writePlayerTestWorkbook(32);
 
 console.log(`Release package generated: ${releaseDir}`);

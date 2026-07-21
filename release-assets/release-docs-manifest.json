@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "source": "docs/使用说明.md",
+      "pdf": "使用说明.pdf",
+      "sha256": "c7ebef4ca2157c9c63af0e7a218952e7ff71b0510fae0427bcc503ac8543ebb4"
+    },
+    {
+      "source": "docs/final_document/赛事现场验收与交付说明.md",
+      "pdf": "赛事验收清单.pdf",
+      "sha256": "c6d1b1d5c2020adcb6175b7d46b365623f65e841009189436d7420ef3c969e60"
+    }
+  ]
+}
