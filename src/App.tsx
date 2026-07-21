@@ -48,6 +48,11 @@ import {
   syncTournamentEvent,
 } from "./domain/tournament";
 import {
+  buildTournamentGroupingResults,
+  hasGroupingResults,
+} from "./domain/groupingResults";
+import type { TournamentGroupingResults } from "./domain/groupingResults";
+import {
   clearTournamentArrangement,
   getTournamentProgress,
   removeImportedMatches,
@@ -56,7 +61,7 @@ import {
   updateArrangementMatch,
 } from "./domain/tournamentState";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
-import { exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
+import { exportGroupingResultsToExcel, exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
 import { parsePlayerFile } from "./services/playerImporter";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
@@ -97,6 +102,7 @@ function App() {
   const arrangementMatches = useMemo(() => state.matches.filter((match) => match.tournamentStage), [state.matches]);
   const tournamentProgress = useMemo(() => getTournamentProgress(state), [state]);
   const syncedEvent = useMemo(() => syncTournamentEvent(state.event, state.matches), [state.event, state.matches]);
+  const groupingResults = useMemo(() => buildTournamentGroupingResults(syncedEvent, state.matches), [syncedEvent, state.matches]);
   const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
   const currentSwissRound = useMemo(() => getCurrentSwissRound(syncedEvent), [syncedEvent]);
   const isGroupFormat = state.event.formatConfig.format === "group_bracket";
@@ -769,11 +775,17 @@ function App() {
               <div><strong>{state.matches.filter((match) => isNoPreliminaryFormat ? isBracketStage(match.tournamentStage) : match.tournamentStage === (isSwissFormat ? "swiss" : "group")).length}</strong><span>{isNoPreliminaryFormat ? "淘汰场次" : isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
               <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
             </div>
+            {!isNoPreliminaryFormat && (
+              <GroupingResultsPanel
+                results={groupingResults}
+                onExport={() => exportGroupingResultsToExcel({ ...state, event: syncedEvent })}
+              />
+            )}
             <section className="arrangement-section">
               <div className="result-toolbar">
                 <div>
                   <h2>编排结果</h2>
-                  <p>未开始的赛事场次可调整场次编号、现场分组和剑道；对阵关系由赛制引擎维护。</p>
+                  <p>未开始的赛事场次可调整场次编号、现场分组和场地；对阵关系由赛制引擎维护。</p>
                 </div>
                 <button className="danger-action" onClick={clearArrangement} disabled={arrangementMatches.length === 0}>
                   <Trash2 size={18} />
@@ -788,7 +800,7 @@ function App() {
                         <th>场次编号</th>
                         <th>阶段 / 轮次</th>
                         <th>现场分组</th>
-                        <th>剑道</th>
+                        <th>场地</th>
                         <th>对阵</th>
                         <th>状态</th>
                       </tr>
@@ -817,7 +829,7 @@ function App() {
                             </td>
                             <td>
                               <input
-                                aria-label={`${match.matchNo} 场剑道`}
+                                aria-label={`${match.matchNo} 场场地`}
                                 value={match.piste}
                                 disabled={!isEditable}
                                 onChange={(event) => patchState((current) => updateArrangementMatch(current, match.id, { piste: event.target.value }))}
@@ -1324,6 +1336,83 @@ function ComprehensiveJudgement(props: {
       </div>
       <button className="primary-action" onClick={props.onSubmit} disabled={isLocked}>提交综合判定</button>
     </div>
+  );
+}
+
+function GroupingResultsPanel(props: { results: TournamentGroupingResults; onExport: () => void }) {
+  const available = hasGroupingResults(props.results);
+  return (
+    <section className="grouping-results-section">
+      <div className="result-toolbar">
+        <div>
+          <h2>选手分组结果</h2>
+          <p>{props.results.kind === "swiss" ? "瑞士轮按轮次展示现场分组" : "小组循环固定分组名单"}</p>
+        </div>
+        <button className="primary-action grouping-export" onClick={props.onExport} disabled={!available}>
+          <FileSpreadsheet size={18} />
+          导出分组结果
+        </button>
+      </div>
+      {!available && <EmptyState text="生成比赛后将在此显示选手分组结果。" />}
+      {available && props.results.kind === "group" && (
+        <div className="grouping-result-grid">
+          {props.results.groups.map((group) => (
+            <section key={group.name} className="grouping-result-group">
+              <div className="grouping-result-title">
+                <h3>{group.name}</h3>
+                <span>{group.players.length} 人</span>
+              </div>
+              <div className="grouping-player-list">
+                {group.players.map((player, index) => (
+                  <div key={player.id} className="grouping-player-row">
+                    <span>{index + 1}</span>
+                    <strong>{player.name}</strong>
+                    <small>{player.club || "未填写单位"}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+      {available && props.results.kind === "swiss" && (
+        <div className="grouping-round-list">
+          {props.results.rounds.map((round) => (
+            <section key={round.roundNo} className="grouping-round-section">
+              <div className="grouping-result-title">
+                <h3>第 {round.roundNo} 轮</h3>
+                <span>{round.status === "locked" ? "已锁定" : "已发布"}</span>
+              </div>
+              <div className="grouping-result-grid">
+                {round.groups.map((group) => (
+                  <section key={group.name} className="grouping-result-group">
+                    <div className="grouping-result-title">
+                      <h3>{group.name}</h3>
+                      <span>{group.matches.length} 场</span>
+                    </div>
+                    <div className="grouping-match-list">
+                      {group.matches.map((match) => (
+                        <div key={match.id} className="grouping-match-row">
+                          <strong>{match.red.name} vs {match.blue.name}</strong>
+                          <span>第 {match.matchNo} 场 · {match.piste}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+              {round.byePlayer && (
+                <div className="grouping-bye-row">
+                  <span>本轮轮空</span>
+                  <strong>{round.byePlayer.name}</strong>
+                  <small>{round.byePlayer.club || "未填写单位"}</small>
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

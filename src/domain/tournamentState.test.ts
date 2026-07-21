@@ -66,11 +66,11 @@ describe("赛事状态操作", () => {
     const imported = createMatch("imported");
     let state = createState([pending, finished, imported]);
 
-    state = updateArrangementMatch(state, pending.id, { matchNo: "A-01", groupName: "一号场", piste: "剑道 1" });
+    state = updateArrangementMatch(state, pending.id, { matchNo: "A-01", groupName: "一号场", piste: "场地 1" });
     state = updateArrangementMatch(state, finished.id, { piste: "不应修改" });
     state = updateArrangementMatch(state, imported.id, { piste: "不应修改" });
 
-    expect(state.matches[0]).toMatchObject({ matchNo: "A-01", groupName: "一号场", piste: "剑道 1" });
+    expect(state.matches[0]).toMatchObject({ matchNo: "A-01", groupName: "一号场", piste: "场地 1" });
     expect(state.matches[1].piste).toBe("一号场");
     expect(state.matches[2].piste).toBe("一号场");
   });

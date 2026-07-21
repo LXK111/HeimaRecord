@@ -763,6 +763,106 @@ h1 {
   border-top: 1px solid #ddd3c2;
 }
 
+.grouping-results-section {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-top: 20px;
+  border-top: 1px solid #ddd3c2;
+}
+
+.grouping-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grouping-result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 22px;
+  min-width: 0;
+}
+
+.grouping-result-group {
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 2px solid #8a7b68;
+}
+
+.grouping-result-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.grouping-result-title h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.grouping-result-title span,
+.grouping-player-row span,
+.grouping-player-row small,
+.grouping-match-row span,
+.grouping-bye-row span,
+.grouping-bye-row small {
+  color: #6d746f;
+}
+
+.grouping-player-list,
+.grouping-match-list,
+.grouping-round-list {
+  display: grid;
+}
+
+.grouping-player-row {
+  display: grid;
+  grid-template-columns: 32px minmax(100px, 1fr) minmax(100px, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e7ded0;
+}
+
+.grouping-player-row strong,
+.grouping-player-row small,
+.grouping-match-row strong {
+  overflow-wrap: anywhere;
+}
+
+.grouping-round-list {
+  gap: 24px;
+}
+
+.grouping-round-section {
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid #cfc5b6;
+}
+
+.grouping-match-row {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 9px 0;
+  border-bottom: 1px solid #e7ded0;
+}
+
+.grouping-bye-row {
+  display: grid;
+  grid-template-columns: 90px minmax(100px, 1fr) minmax(100px, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 0;
+  border-top: 1px solid #e7ded0;
+  border-bottom: 1px solid #e7ded0;
+}
+
 .arrangement-table input {
   width: 100%;
   min-width: 110px;
@@ -1096,6 +1196,20 @@ th {
 
   .home-metrics > div:last-child {
     border-bottom: 0;
+  }
+
+  .grouping-result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .grouping-player-row,
+  .grouping-bye-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .grouping-player-row small,
+  .grouping-bye-row small {
+    grid-column: 2;
   }
 
   .scoreboard {

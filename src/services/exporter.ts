@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { buildTournamentGroupingResults } from "../domain/groupingResults";
 import { getEndReasonLabel, getWinnerLabel } from "../domain/rules";
 import { downloadBlob } from "./download";
 import type {
@@ -65,6 +66,71 @@ export async function exportMatchesToExcel(matches: Match[]) {
 export async function exportTournamentResultsToExcel(state: TournamentState, liveRankings: TournamentRanking[]) {
   const workbook = buildTournamentResultsWorkbook(state, liveRankings);
   await downloadWorkbook(workbook, "heima-record-tournament-results.xlsx");
+}
+
+export async function exportGroupingResultsToExcel(state: TournamentState) {
+  const workbook = buildGroupingResultsWorkbook(state);
+  await downloadWorkbook(workbook, "heima-record-grouping-results.xlsx");
+}
+
+export function buildGroupingResultsWorkbook(state: TournamentState) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "heima-record";
+  workbook.created = new Date();
+  const results = buildTournamentGroupingResults(state.event, state.matches);
+
+  if (results.kind === "group") {
+    addTableWorksheet(
+      workbook,
+      "小组分组结果",
+      ["组别", "种子", "选手", "单位", "状态"],
+      results.groups.flatMap((group) => group.players.map((player) => ({
+        组别: group.name,
+        种子: player.seed ?? "",
+        选手: player.name,
+        单位: player.club,
+        状态: player.status === "active" ? "正常" : "退赛",
+      })))
+    );
+    return workbook;
+  }
+
+  if (results.kind === "swiss") {
+    results.rounds.forEach((round) => {
+      const rows = round.groups.flatMap((group) => group.matches.map((match) => ({
+        现场分组: group.name,
+        场次编号: match.matchNo,
+        场地: match.piste,
+        红方: match.red.name,
+        红方单位: match.red.club,
+        蓝方: match.blue.name,
+        蓝方单位: match.blue.club,
+        备注: "",
+      })));
+      if (round.byePlayer) {
+        rows.push({
+          现场分组: "轮空",
+          场次编号: "",
+          场地: "",
+          红方: round.byePlayer.name,
+          红方单位: round.byePlayer.club,
+          蓝方: "",
+          蓝方单位: "",
+          备注: "本轮轮空",
+        });
+      }
+      addTableWorksheet(
+        workbook,
+        `瑞士第${round.roundNo}轮`,
+        ["现场分组", "场次编号", "场地", "红方", "红方单位", "蓝方", "蓝方单位", "备注"],
+        rows
+      );
+    });
+    if (results.rounds.length > 0) return workbook;
+  }
+
+  addTableWorksheet(workbook, "分组结果", ["状态"], [{ 状态: "尚未生成分组结果" }]);
+  return workbook;
 }
 
 export function buildTournamentResultsWorkbook(state: TournamentState, liveRankings: TournamentRanking[]) {
