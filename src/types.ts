@@ -8,6 +8,10 @@ export type MatchSide = "red" | "blue";
 
 export type PenaltyStopResult = "opponent_win" | "self_win" | "draw" | "manual";
 
+export type TournamentStageType = "group" | "bracket" | "third_place";
+
+export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "bracket_ready" | "finished";
+
 export type MatchEndReason =
   | "target_score"
   | "round_limit"
@@ -123,6 +127,11 @@ export interface Match {
   matchNo: string;
   groupName: string;
   piste: string;
+  tournamentStage?: TournamentStageType;
+  tournamentRound?: number;
+  bracketNodeId?: string;
+  redPlayerId?: string;
+  bluePlayerId?: string;
   red: Competitor;
   blue: Competitor;
   redScore: number;
@@ -144,9 +153,68 @@ export interface Match {
   updatedAt: string;
 }
 
+export interface TournamentPlayer {
+  id: string;
+  name: string;
+  club: string;
+  seed: number | null;
+  status: "active" | "withdrawn";
+  groupName: string;
+}
+
+export interface TournamentFormatConfig {
+  groupSize: number;
+  groupAdvancers: number;
+  totalAdvancers: number;
+  generateThirdPlaceMatch: boolean;
+}
+
+export interface TournamentRanking {
+  rank: number;
+  playerId: string;
+  name: string;
+  club: string;
+  groupName: string;
+  eventPoints: number;
+  realWins: number;
+  draws: number;
+  losses: number;
+  scoreFor: number;
+  scoreAgainst: number;
+  scoreDiff: number;
+  disciplinePenalty: number;
+  advanced: boolean;
+  needsPlayoff: boolean;
+}
+
+export interface BracketNode {
+  id: string;
+  roundNo: number;
+  label: string;
+  matchId: string | null;
+  redPlayerId: string | null;
+  bluePlayerId: string | null;
+  winnerPlayerId: string | null;
+  loserPlayerId: string | null;
+  seedOrder: number;
+  stage: TournamentStageType;
+  status: "bye" | "ready" | "finished";
+}
+
+export interface TournamentEvent {
+  players: TournamentPlayer[];
+  stage: TournamentEventStage;
+  formatConfig: TournamentFormatConfig;
+  groupNames: string[];
+  rankings: TournamentRanking[];
+  bracketNodes: BracketNode[];
+  updatedAt: string;
+}
+
 export interface TournamentState {
   name: string;
   ruleSet: RuleSet;
+  event: TournamentEvent;
   matches: Match[];
   selectedMatchId: string | null;
   updatedAt: string;

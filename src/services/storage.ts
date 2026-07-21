@@ -1,5 +1,5 @@
 import { defaultRuleSet, normalizeMatch, normalizeRuleSet } from "../domain/rules";
-import type { TournamentState } from "../types";
+import type { TournamentEvent, TournamentState } from "../types";
 
 const DB_NAME = "heima-record-db";
 const DB_VERSION = 1;
@@ -24,6 +24,7 @@ export function createInitialState(): TournamentState {
   return {
     name: "黑马兵击记录台",
     ruleSet: defaultRuleSet,
+    event: createDefaultTournamentEvent(),
     matches: [],
     selectedMatchId: null,
     updatedAt: new Date().toISOString(),
@@ -35,9 +36,44 @@ export function normalizeState(state: TournamentState): TournamentState {
   return {
     ...state,
     ruleSet,
+    event: normalizeTournamentEvent(state.event),
     matches: (state.matches ?? []).map((match) => normalizeMatch(match, ruleSet)),
     selectedMatchId: state.selectedMatchId ?? null,
     updatedAt: state.updatedAt ?? new Date().toISOString(),
+  };
+}
+
+export function createDefaultTournamentEvent(): TournamentEvent {
+  return {
+    players: [],
+    stage: "setup",
+    formatConfig: {
+      groupSize: 6,
+      groupAdvancers: 2,
+      totalAdvancers: 4,
+      generateThirdPlaceMatch: true,
+    },
+    groupNames: [],
+    rankings: [],
+    bracketNodes: [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentEvent {
+  const fallback = createDefaultTournamentEvent();
+  return {
+    ...fallback,
+    ...event,
+    players: event?.players ?? [],
+    formatConfig: {
+      ...fallback.formatConfig,
+      ...event?.formatConfig,
+    },
+    groupNames: event?.groupNames ?? [],
+    rankings: event?.rankings ?? [],
+    bracketNodes: event?.bracketNodes ?? [],
+    updatedAt: event?.updatedAt ?? new Date().toISOString(),
   };
 }
 

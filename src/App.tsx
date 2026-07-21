@@ -29,14 +29,24 @@ import {
   restorePreviousSnapshot,
   touch,
 } from "./domain/rules";
+import {
+  advanceBracket,
+  calculateRankings,
+  generateGroupStage,
+  generateInitialBracket,
+  parsePlayersText,
+  refreshTournamentRankings,
+  syncTournamentEvent,
+} from "./domain/tournament";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
 import { exportMatchesToCsv, exportMatchesToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
+import { parsePlayerFile } from "./services/playerImporter";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
 import { createInitialState, loadState, saveState } from "./services/storage";
 import type { AdjudicationInput, Match, RuleSet, TournamentState, Winner } from "./types";
 
-type ViewKey = "import" | "matches" | "console" | "rules" | "results";
+type ViewKey = "import" | "players" | "tournament" | "matches" | "console" | "rankings" | "bracket" | "rules" | "results";
 
 type MatchGroup = {
   name: string;
@@ -50,6 +60,9 @@ function App() {
   const [importMessage, setImportMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
   const [ruleMessage, setRuleMessage] = useState("");
+  const [playerMessage, setPlayerMessage] = useState("");
+  const [tournamentMessage, setTournamentMessage] = useState("");
+  const [playerText, setPlayerText] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
   const [adjudication, setAdjudication] = useState<AdjudicationInput>({
     redScoreDelta: 0,
@@ -64,6 +77,8 @@ function App() {
     [state.matches, state.selectedMatchId]
   );
   const groupedMatches = useMemo(() => groupMatchesByName(state.matches), [state.matches]);
+  const syncedEvent = useMemo(() => syncTournamentEvent(state.event, state.matches), [state.event, state.matches]);
+  const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
 
   useEffect(() => {
     loadState()
@@ -218,6 +233,105 @@ function App() {
     }
   }
 
+  async function handlePlayerImport(file: File | null) {
+    if (!file) return;
+    setPlayerMessage("正在导入选手...");
+    try {
+      const players = await parsePlayerFile(file);
+      patchState((current) => ({
+        ...current,
+        event: {
+          ...current.event,
+          players,
+          stage: "setup",
+          groupNames: [],
+          rankings: [],
+          bracketNodes: [],
+        },
+      }));
+      setPlayerMessage(`已导入 ${players.length} 名选手。`);
+    } catch (error) {
+      setPlayerMessage(error instanceof Error ? error.message : "选手导入失败。");
+    }
+  }
+
+  function applyPlayerText() {
+    const players = parsePlayersText(playerText);
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        players,
+        stage: "setup",
+        groupNames: [],
+        rankings: [],
+        bracketNodes: [],
+      },
+    }));
+    setPlayerMessage(`已录入 ${players.length} 名选手。`);
+  }
+
+  function updateTournamentConfig(patch: Partial<TournamentState["event"]["formatConfig"]>) {
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        formatConfig: { ...current.event.formatConfig, ...patch },
+      },
+    }));
+  }
+
+  function generateGroupMatches() {
+    patchState((current) => {
+      const generated = generateGroupStage(current.event, current.ruleSet);
+      const nonTournamentMatches = current.matches.filter((match) => !match.tournamentStage);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...nonTournamentMatches, ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setActiveView("matches");
+    setTournamentMessage("已生成小组循环赛。");
+  }
+
+  function refreshRankings() {
+    patchState((current) => ({
+      ...current,
+      event: refreshTournamentRankings(current.event, current.matches, current.ruleSet),
+    }));
+    setTournamentMessage("已刷新小组排名。");
+  }
+
+  function generateBracket() {
+    patchState((current) => {
+      const rankedEvent = refreshTournamentRankings(current.event, current.matches, current.ruleSet);
+      const generated = generateInitialBracket(rankedEvent, current.matches, current.ruleSet);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...current.matches.filter((match) => match.tournamentStage !== "bracket" && match.tournamentStage !== "third_place"), ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setActiveView("bracket");
+    setTournamentMessage("已生成淘汰赛签表。");
+  }
+
+  function advanceBracketRound() {
+    patchState((current) => {
+      const generated = advanceBracket(current.event, current.matches, current.ruleSet);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...current.matches, ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setTournamentMessage("已尝试推进淘汰赛；若仍有未完成场次，请先记录结果。");
+  }
+
   if (isLoading) {
     return <div className="loading">正在加载记录台...</div>;
   }
@@ -235,8 +349,12 @@ function App() {
         <nav>
           {[
             ["import", "导入"],
+            ["players", "选手"],
+            ["tournament", "编排"],
             ["matches", "场次"],
             ["console", "控制台"],
+            ["rankings", "排名"],
+            ["bracket", "签表"],
             ["rules", "规则"],
             ["results", "结果"],
           ].map(([key, label]) => (
@@ -268,6 +386,81 @@ function App() {
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleImport(event.target.files?.[0] ?? null)} />
             </label>
             {importMessage && <p className="notice">{importMessage}</p>}
+          </section>
+        )}
+
+        {activeView === "players" && (
+          <section className="panel tournament-panel">
+            <div className="result-toolbar">
+              <div>
+                <h2>选手名单</h2>
+                <p>支持粘贴录入，也支持导入 Excel / CSV。每行格式：姓名，单位，种子序号。</p>
+              </div>
+              <label className="file-button">
+                <FolderUp size={18} />
+                导入选手
+                <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handlePlayerImport(event.target.files?.[0] ?? null)} />
+              </label>
+            </div>
+            <div className="player-input-grid">
+              <label className="field">
+                <span>批量录入</span>
+                <textarea value={playerText} onChange={(event) => setPlayerText(event.target.value)} placeholder="张三，黑马，1&#10;李四，黑马，2" />
+              </label>
+              <div className="stage-actions">
+                <button onClick={applyPlayerText}>应用录入名单</button>
+              </div>
+            </div>
+            {playerMessage && <p className="notice">{playerMessage}</p>}
+            <DataTable
+              headers={["种子", "姓名", "单位", "分组", "状态"]}
+              rows={state.event.players.map((player) => [
+                player.seed ?? "-",
+                player.name,
+                player.club || "-",
+                player.groupName || "未分组",
+                player.status === "active" ? "正常" : "退赛",
+              ])}
+              emptyText="还没有选手，请先导入或批量录入。"
+            />
+          </section>
+        )}
+
+        {activeView === "tournament" && (
+          <section className="panel tournament-panel">
+            <div className="result-toolbar">
+              <div>
+                <h2>赛事编排</h2>
+                <p>第一阶段支持小组循环 + 单败淘汰 + 季军赛。</p>
+              </div>
+              <span className="stage-badge">{tournamentStageLabel(syncedEvent.stage)}</span>
+            </div>
+            <div className="rules-grid">
+              <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
+              <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
+              <NumberField label="总晋级人数" value={state.event.formatConfig.totalAdvancers} onChange={(value) => updateTournamentConfig({ totalAdvancers: value })} />
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={state.event.formatConfig.generateThirdPlaceMatch}
+                  onChange={(event) => updateTournamentConfig({ generateThirdPlaceMatch: event.target.checked })}
+                />
+                生成季军赛
+              </label>
+            </div>
+            <div className="stage-actions">
+              <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>
+              <button onClick={refreshRankings}>刷新小组排名</button>
+              <button onClick={generateBracket} disabled={liveRankings.filter((ranking) => ranking.advanced).length < 2}>生成淘汰赛</button>
+              <button onClick={advanceBracketRound}>推进淘汰赛</button>
+            </div>
+            {tournamentMessage && <p className="notice">{tournamentMessage}</p>}
+            <div className="metric-grid">
+              <div><strong>{state.event.players.length}</strong><span>选手</span></div>
+              <div><strong>{syncedEvent.groupNames.length}</strong><span>小组</span></div>
+              <div><strong>{state.matches.filter((match) => match.tournamentStage === "group").length}</strong><span>小组赛</span></div>
+              <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
+            </div>
           </section>
         )}
 
@@ -387,6 +580,67 @@ function App() {
           )
         )}
 
+        {activeView === "rankings" && (
+          <section className="panel tournament-panel">
+            <div className="result-toolbar">
+              <div>
+                <h2>小组排名</h2>
+                <p>默认按赛事积分、真实胜场、净胜分、纪律扣分排序；完全同分时后续阶段生成附加赛入口。</p>
+              </div>
+              <button className="primary-action" onClick={refreshRankings}>刷新排名</button>
+            </div>
+            {syncedEvent.groupNames.map((groupName) => (
+              <div key={groupName} className="ranking-section">
+                <h2>{groupName}</h2>
+                <DataTable
+                  headers={["组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级"]}
+                  rows={liveRankings
+                    .filter((ranking) => ranking.groupName === groupName)
+                    .map((ranking) => [
+                      ranking.rank,
+                      `${ranking.name}${ranking.club ? `（${ranking.club}）` : ""}`,
+                      ranking.eventPoints,
+                      ranking.realWins,
+                      ranking.draws,
+                      ranking.losses,
+                      ranking.scoreDiff,
+                      ranking.disciplinePenalty,
+                      ranking.advanced ? "是" : "否",
+                    ])}
+                  emptyText="暂无排名，请先生成小组赛并记录结果。"
+                />
+              </div>
+            ))}
+            {syncedEvent.groupNames.length === 0 && <EmptyState text="暂无分组，请先在编排页生成小组循环赛。" />}
+          </section>
+        )}
+
+        {activeView === "bracket" && (
+          <section className="panel tournament-panel">
+            <div className="result-toolbar">
+              <div>
+                <h2>淘汰签表</h2>
+                <p>签表按排名种子生成，非 2 的幂人数会给高种子轮空；半决赛后生成季军赛。</p>
+              </div>
+              <button className="primary-action" onClick={advanceBracketRound}>推进淘汰赛</button>
+            </div>
+            <div className="bracket-list">
+              {syncedEvent.bracketNodes.map((node) => {
+                const match = node.matchId ? state.matches.find((item) => item.id === node.matchId) : null;
+                return (
+                  <div key={node.id} className="bracket-node">
+                    <span>{node.stage === "third_place" ? "季军赛" : `第 ${node.roundNo} 轮`}</span>
+                    <strong>{node.label}</strong>
+                    <p>{match ? `${match.red.name} vs ${match.blue.name}` : "轮空晋级"}</p>
+                    <small>{bracketStatusLabel(node.status)}{match?.winner ? ` · 胜方：${getWinnerLabel(match.winner, match)}` : ""}</small>
+                  </div>
+                );
+              })}
+            </div>
+            {syncedEvent.bracketNodes.length === 0 && <EmptyState text="暂无签表，请先生成淘汰赛。" />}
+          </section>
+        )}
+
         {activeView === "rules" && (
           <section className="panel rules-panel">
             <div className="result-toolbar">
@@ -501,8 +755,12 @@ function App() {
 function viewTitle(view: ViewKey) {
   const titles: Record<ViewKey, string> = {
     import: "导入场次",
+    players: "选手名单",
+    tournament: "赛事编排",
     matches: "比赛场次",
     console: "比赛控制台",
+    rankings: "小组排名",
+    bracket: "淘汰签表",
     rules: "规则配置",
     results: "结果导出",
   };
@@ -515,6 +773,26 @@ function statusLabel(status: Match["status"]) {
     running: "进行中",
     paused: "已暂停",
     finished: "已结束",
+  };
+  return labels[status];
+}
+
+function tournamentStageLabel(stage: TournamentState["event"]["stage"]) {
+  const labels: Record<TournamentState["event"]["stage"], string> = {
+    setup: "未编排",
+    group_ready: "小组赛",
+    group_finished: "小组赛完成",
+    bracket_ready: "淘汰赛",
+    finished: "赛事完成",
+  };
+  return labels[stage];
+}
+
+function bracketStatusLabel(status: TournamentState["event"]["bracketNodes"][number]["status"]) {
+  const labels: Record<TournamentState["event"]["bracketNodes"][number]["status"], string> = {
+    bye: "轮空",
+    ready: "待比赛",
+    finished: "已完成",
   };
   return labels[status];
 }
@@ -581,6 +859,28 @@ function ComprehensiveJudgement(props: {
         </label>
       </div>
       <button className="primary-action" onClick={props.onSubmit} disabled={isLocked}>提交综合判定</button>
+    </div>
+  );
+}
+
+function DataTable(props: { headers: string[]; rows: Array<Array<string | number>>; emptyText: string }) {
+  if (props.rows.length === 0) return <EmptyState text={props.emptyText} />;
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {props.headers.map((header) => <th key={header}>{header}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.map((row, rowIndex) => (
+            <tr key={`${rowIndex}-${row.join("-")}`}>
+              {row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

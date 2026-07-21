@@ -17,6 +17,7 @@ body {
 button,
 input,
 select,
+textarea,
 .file-button {
   font: inherit;
 }
@@ -503,6 +504,18 @@ h1 {
   gap: 20px;
 }
 
+.tournament-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.player-input-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 16px;
+}
+
 .rules-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -520,12 +533,104 @@ h1 {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   min-height: 42px;
   border: 1px solid #cfc5b6;
   border-radius: 6px;
   padding: 8px 10px;
   background: #fffdf8;
+}
+
+.field textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+.stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.stage-actions button {
+  border: 0;
+  border-radius: 6px;
+  min-height: 42px;
+  padding: 10px 14px;
+  background: #18231f;
+  color: #fff;
+}
+
+.stage-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.stage-badge {
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #e4ded4;
+  color: #16201c;
+  font-weight: 700;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.metric-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #e1d7c8;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.metric-grid strong {
+  font-size: 28px;
+}
+
+.metric-grid span {
+  color: #6d746f;
+}
+
+.ranking-section {
+  display: grid;
+  gap: 10px;
+}
+
+.ranking-section h2 {
+  font-size: 20px;
+}
+
+.bracket-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.bracket-node {
+  display: grid;
+  gap: 7px;
+  min-height: 132px;
+  padding: 14px;
+  border: 1px solid #ddd3c2;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.bracket-node span,
+.bracket-node small {
+  color: #6d746f;
+}
+
+.bracket-node strong,
+.bracket-node p {
+  overflow-wrap: anywhere;
 }
 
 .round-panel {
@@ -675,7 +780,7 @@ th {
   }
 
   nav {
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(9, max-content);
     overflow-x: auto;
   }
 
@@ -690,9 +795,14 @@ th {
   }
 
   .result-toolbar,
-  .backup-box {
+  .backup-box,
+  .player-input-grid {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .player-input-grid {
+    grid-template-columns: 1fr;
   }
 
   .scoreboard {
