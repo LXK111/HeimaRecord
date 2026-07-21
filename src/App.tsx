@@ -32,6 +32,7 @@ import {
 import {
   advanceBracket,
   calculateRankings,
+  generateDirectEliminationBracket,
   generateNextSwissRound,
   generateGroupStage,
   generateInitialBracket,
@@ -85,7 +86,9 @@ function App() {
   const syncedEvent = useMemo(() => syncTournamentEvent(state.event, state.matches), [state.event, state.matches]);
   const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
   const currentSwissRound = useMemo(() => getCurrentSwissRound(syncedEvent), [syncedEvent]);
+  const isGroupFormat = state.event.formatConfig.format === "group_bracket";
   const isSwissFormat = state.event.formatConfig.format === "swiss_bracket";
+  const isDirectBracketFormat = state.event.formatConfig.format === "direct_bracket";
 
   useEffect(() => {
     loadState()
@@ -437,6 +440,16 @@ function App() {
 
   function generateBracket() {
     patchState((current) => {
+      if (current.event.formatConfig.format === "direct_bracket") {
+        const nonTournamentMatches = current.matches.filter((match) => !match.tournamentStage);
+        const generated = generateDirectEliminationBracket(current.event, nonTournamentMatches, current.ruleSet);
+        return {
+          ...current,
+          event: generated.event,
+          matches: [...nonTournamentMatches, ...generated.matches],
+          selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+        };
+      }
       const rankedEvent = refreshTournamentRankings(current.event, current.matches, current.ruleSet);
       const generated = generateInitialBracket(rankedEvent, current.matches, current.ruleSet);
       return {
@@ -447,7 +460,7 @@ function App() {
       };
     });
     setActiveView("bracket");
-    setTournamentMessage("已生成淘汰赛签表。");
+    setTournamentMessage(isDirectBracketFormat ? "已按选手种子生成直接单败淘汰签表。" : "已生成淘汰赛签表。");
   }
 
   function advanceBracketRound() {
@@ -562,7 +575,7 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>赛事编排</h2>
-                <p>支持小组循环或瑞士轮作为预赛，再进入单败淘汰和季军赛。</p>
+                <p>支持小组循环、瑞士轮或直接单败淘汰，统一复用比赛控制台记录结果。</p>
               </div>
               <span className="stage-badge">{tournamentStageLabel(syncedEvent.stage)}</span>
             </div>
@@ -575,9 +588,10 @@ function App() {
                 >
                   <option value="group_bracket">小组循环 + 单败淘汰</option>
                   <option value="swiss_bracket">瑞士轮 + 单败淘汰</option>
+                  <option value="direct_bracket">直接单败淘汰赛</option>
                 </select>
               </label>
-              {!isSwissFormat && (
+              {isGroupFormat && (
                 <>
                   <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
                   <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
@@ -616,7 +630,7 @@ function App() {
               </label>
             </div>
             <div className="stage-actions">
-              {!isSwissFormat && <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>}
+              {isGroupFormat && <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>}
               {isSwissFormat && (
                 <>
                   <button onClick={generateSwissOpeningRound} disabled={state.event.players.length < 2 || syncedEvent.swissRounds.length > 0}>生成瑞士第 1 轮</button>
@@ -629,12 +643,16 @@ function App() {
                   </button>
                 </>
               )}
-              <button onClick={refreshRankings}>{isSwissFormat ? "刷新瑞士轮排名" : "刷新小组排名"}</button>
+              {!isDirectBracketFormat && <button onClick={refreshRankings}>{isSwissFormat ? "刷新瑞士轮排名" : "刷新小组排名"}</button>}
               <button
                 onClick={generateBracket}
-                disabled={liveRankings.filter((ranking) => ranking.advanced).length < 2 || (isSwissFormat && syncedEvent.stage !== "swiss_finished")}
+                disabled={
+                  isDirectBracketFormat
+                    ? state.event.players.filter((player) => player.status === "active").length < 2
+                    : liveRankings.filter((ranking) => ranking.advanced).length < 2 || (isSwissFormat && syncedEvent.stage !== "swiss_finished")
+                }
               >
-                生成淘汰赛
+                {isDirectBracketFormat ? "生成直接淘汰赛" : "生成淘汰赛"}
               </button>
               <button onClick={advanceBracketRound}>推进淘汰赛</button>
             </div>
@@ -656,8 +674,8 @@ function App() {
             {tournamentMessage && <p className="notice">{tournamentMessage}</p>}
             <div className="metric-grid">
               <div><strong>{state.event.players.length}</strong><span>选手</span></div>
-              <div><strong>{isSwissFormat ? syncedEvent.swissRounds.length : syncedEvent.groupNames.length}</strong><span>{isSwissFormat ? "瑞士轮" : "小组"}</span></div>
-              <div><strong>{state.matches.filter((match) => match.tournamentStage === (isSwissFormat ? "swiss" : "group")).length}</strong><span>{isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
+              <div><strong>{isDirectBracketFormat ? state.event.players.filter((player) => player.status === "active").length : isSwissFormat ? syncedEvent.swissRounds.length : syncedEvent.groupNames.length}</strong><span>{isDirectBracketFormat ? "参赛选手" : isSwissFormat ? "瑞士轮" : "小组"}</span></div>
+              <div><strong>{state.matches.filter((match) => match.tournamentStage === (isDirectBracketFormat ? "bracket" : isSwissFormat ? "swiss" : "group")).length}</strong><span>{isDirectBracketFormat ? "淘汰场次" : isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
               <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
             </div>
           </section>
@@ -783,46 +801,54 @@ function App() {
           <section className="panel tournament-panel">
             <div className="result-toolbar">
               <div>
-                <h2>{isSwissFormat ? "瑞士轮排名" : "小组排名"}</h2>
-                <p>排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。</p>
+                <h2>{isDirectBracketFormat ? "预赛排名" : isSwissFormat ? "瑞士轮排名" : "小组排名"}</h2>
+                <p>{isDirectBracketFormat ? "直接单败淘汰赛不经过预赛排名，签表按选手种子生成。" : "排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。"}</p>
               </div>
-              <div className="stage-actions">
-                <button onClick={refreshRankings}>刷新排名</button>
-                <button onClick={generatePlayoffs} disabled={!liveRankings.some((ranking) => ranking.needsPlayoff)}>生成附加赛</button>
-              </div>
+              {!isDirectBracketFormat && (
+                <div className="stage-actions">
+                  <button onClick={refreshRankings}>刷新排名</button>
+                  <button onClick={generatePlayoffs} disabled={!liveRankings.some((ranking) => ranking.needsPlayoff)}>生成附加赛</button>
+                </div>
+              )}
             </div>
-            <RankingConfigPanel
-              state={state}
-              onEventPointChange={updateEventPointConfig}
-              onDisciplineChange={updateDisciplineConfig}
-              onWarningDeductionChange={updateWarningDeduction}
-              onRuleToggle={toggleRankingRule}
-              onRuleMove={moveRankingRule}
-            />
-            {syncedEvent.groupNames.map((groupName) => (
-              <div key={groupName} className="ranking-section">
-                <h2>{groupName}</h2>
-                <DataTable
-                  headers={[isSwissFormat ? "瑞士轮名次" : "组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级", "附加赛"]}
-                  rows={liveRankings
-                    .filter((ranking) => ranking.groupName === groupName)
-                    .map((ranking) => [
-                      ranking.rank,
-                      `${ranking.name}${ranking.club ? `（${ranking.club}）` : ""}`,
-                      ranking.eventPoints,
-                      ranking.realWins,
-                      ranking.draws,
-                      ranking.losses,
-                      ranking.scoreDiff,
-                      ranking.disciplinePenalty,
-                      ranking.advanced ? "是" : "否",
-                      ranking.needsPlayoff ? "需要" : "-",
-                    ])}
-                  emptyText={isSwissFormat ? "暂无排名，请先生成瑞士轮并记录结果。" : "暂无排名，请先生成小组赛并记录结果。"}
+            {isDirectBracketFormat ? (
+              <EmptyState text="直接单败淘汰赛不需要预赛排名，请在编排页生成签表。" />
+            ) : (
+              <>
+                <RankingConfigPanel
+                  state={state}
+                  onEventPointChange={updateEventPointConfig}
+                  onDisciplineChange={updateDisciplineConfig}
+                  onWarningDeductionChange={updateWarningDeduction}
+                  onRuleToggle={toggleRankingRule}
+                  onRuleMove={moveRankingRule}
                 />
-              </div>
-            ))}
-            {syncedEvent.groupNames.length === 0 && <EmptyState text={isSwissFormat ? "暂无瑞士轮排名，请先在编排页生成瑞士轮。" : "暂无分组，请先在编排页生成小组循环赛。"} />}
+                {syncedEvent.groupNames.map((groupName) => (
+                  <div key={groupName} className="ranking-section">
+                    <h2>{groupName}</h2>
+                    <DataTable
+                      headers={[isSwissFormat ? "瑞士轮名次" : "组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级", "附加赛"]}
+                      rows={liveRankings
+                        .filter((ranking) => ranking.groupName === groupName)
+                        .map((ranking) => [
+                          ranking.rank,
+                          `${ranking.name}${ranking.club ? `（${ranking.club}）` : ""}`,
+                          ranking.eventPoints,
+                          ranking.realWins,
+                          ranking.draws,
+                          ranking.losses,
+                          ranking.scoreDiff,
+                          ranking.disciplinePenalty,
+                          ranking.advanced ? "是" : "否",
+                          ranking.needsPlayoff ? "需要" : "-",
+                        ])}
+                      emptyText={isSwissFormat ? "暂无排名，请先生成瑞士轮并记录结果。" : "暂无排名，请先生成小组赛并记录结果。"}
+                    />
+                  </div>
+                ))}
+                {syncedEvent.groupNames.length === 0 && <EmptyState text={isSwissFormat ? "暂无瑞士轮排名，请先在编排页生成瑞士轮。" : "暂无分组，请先在编排页生成小组循环赛。"} />}
+              </>
+            )}
           </section>
         )}
 

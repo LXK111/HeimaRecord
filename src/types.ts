@@ -12,7 +12,7 @@ export type TournamentStageType = "group" | "playoff" | "swiss" | "bracket" | "t
 
 export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "swiss_ready" | "swiss_finished" | "bracket_ready" | "finished";
 
-export type TournamentFormat = "group_bracket" | "swiss_bracket";
+export type TournamentFormat = "group_bracket" | "swiss_bracket" | "direct_bracket";
 
 export type SwissRoundStatus = "published" | "locked";
 

@@ -9,6 +9,7 @@ type GeneratedMatches = {
 type PlayerStanding = Omit<TournamentRanking, "rank" | "advanced" | "needsPlayoff">;
 
 const SWISS_GROUP_NAME = "瑞士轮";
+const DIRECT_BRACKET_GROUP_NAME = "直接淘汰";
 
 export function createTournamentPlayer(input: { name: string; club?: string; seed?: number | null }): TournamentPlayer {
   return {
@@ -240,6 +241,25 @@ export function generatePlayoffMatches(event: TournamentEvent, matches: Match[],
   };
 }
 
+export function generateDirectEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: DIRECT_BRACKET_GROUP_NAME } : { ...player, groupName: "" }));
+  const rankings = createDirectEliminationRankings(players);
+  if (rankings.length < 2) return { event: touchEvent(event), matches: [] };
+  return generateInitialBracket(
+    {
+      ...event,
+      players,
+      groupNames: [DIRECT_BRACKET_GROUP_NAME],
+      rankings,
+      swissRounds: [],
+      bracketNodes: [],
+      stage: "setup",
+    },
+    matches,
+    ruleSet
+  );
+}
+
 export function generateInitialBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
   const rankings = event.rankings.length ? event.rankings : calculateRankings(event, matches, ruleSet);
   const seeds = rankings
@@ -425,6 +445,30 @@ function createSwissMatch(input: { matchNo: string; roundNo: number; red: Tourna
     bluePlayerId: input.blue.id,
     events: [createMatchEvent(match.id, "match_created", `${groupName}生成场次`)],
   };
+}
+
+function createDirectEliminationRankings(players: TournamentPlayer[]): TournamentRanking[] {
+  // 直接单败没有预赛积分，签表种子只来自选手名单的 seed 和姓名兜底排序。
+  return players
+    .filter((player) => player.status === "active")
+    .sort(comparePlayersBySeed)
+    .map((player, index) => ({
+      rank: index + 1,
+      playerId: player.id,
+      name: player.name,
+      club: player.club,
+      groupName: DIRECT_BRACKET_GROUP_NAME,
+      eventPoints: 0,
+      realWins: 0,
+      draws: 0,
+      losses: 0,
+      scoreFor: 0,
+      scoreAgainst: 0,
+      scoreDiff: 0,
+      disciplinePenalty: 0,
+      advanced: true,
+      needsPlayoff: false,
+    }));
 }
 
 function orderSwissPlayersByRanking(players: TournamentPlayer[], rankings: TournamentRanking[]) {
