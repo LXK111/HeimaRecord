@@ -46,7 +46,7 @@ import {
   syncTournamentEvent,
 } from "./domain/tournament";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
-import { exportMatchesToCsv, exportMatchesToExcel } from "./services/exporter";
+import { exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
 import { parsePlayerFile } from "./services/playerImporter";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
@@ -951,6 +951,7 @@ function App() {
                 <p>用于提交或归档比赛结果，不用于完整恢复现场状态。</p>
               </div>
               <div className="result-actions">
+                <button onClick={() => exportTournamentResultsToExcel({ ...state, event: syncedEvent }, liveRankings)}><FileSpreadsheet size={18} />导出赛事结果 Excel</button>
                 <button onClick={() => exportMatchesToCsv(state.matches)}><Download size={18} />导出 CSV</button>
                 <button onClick={() => exportMatchesToExcel(state.matches)}><FileSpreadsheet size={18} />导出 Excel</button>
               </div>
