@@ -8,9 +8,13 @@ export type MatchSide = "red" | "blue";
 
 export type PenaltyStopResult = "opponent_win" | "self_win" | "draw" | "manual";
 
-export type TournamentStageType = "group" | "playoff" | "bracket" | "third_place";
+export type TournamentStageType = "group" | "playoff" | "swiss" | "bracket" | "third_place";
 
-export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "bracket_ready" | "finished";
+export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "swiss_ready" | "swiss_finished" | "bracket_ready" | "finished";
+
+export type TournamentFormat = "group_bracket" | "swiss_bracket";
+
+export type SwissRoundStatus = "published" | "locked";
 
 export type RankingRuleKey = "eventPoints" | "realWins" | "scoreDiff" | "disciplinePenalty" | "headToHead" | "playoff";
 
@@ -165,9 +169,14 @@ export interface TournamentPlayer {
 }
 
 export interface TournamentFormatConfig {
+  format: TournamentFormat;
   groupSize: number;
   groupAdvancers: number;
   totalAdvancers: number;
+  swissRounds: number;
+  swissAdvancers: number;
+  avoidClubInSwiss: boolean;
+  allowSwissBye: boolean;
   generateThirdPlaceMatch: boolean;
 }
 
@@ -222,6 +231,13 @@ export interface BracketNode {
   status: "bye" | "ready" | "finished";
 }
 
+export interface SwissRound {
+  roundNo: number;
+  status: SwissRoundStatus;
+  matchIds: string[];
+  byePlayerId: string | null;
+}
+
 export interface TournamentEvent {
   players: TournamentPlayer[];
   stage: TournamentEventStage;
@@ -231,6 +247,7 @@ export interface TournamentEvent {
   disciplinePointConfig: DisciplinePointConfig;
   groupNames: string[];
   rankings: TournamentRanking[];
+  swissRounds: SwissRound[];
   bracketNodes: BracketNode[];
   updatedAt: string;
 }

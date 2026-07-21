@@ -1,5 +1,5 @@
 import { createEmptyMatch, createMatchEvent } from "./rules";
-import type { BracketNode, Match, RankingRuleKey, RuleSet, TournamentEvent, TournamentPlayer, TournamentRanking } from "../types";
+import type { BracketNode, Match, RankingRuleKey, RuleSet, SwissRound, TournamentEvent, TournamentPlayer, TournamentRanking } from "../types";
 
 type GeneratedMatches = {
   event: TournamentEvent;
@@ -7,6 +7,8 @@ type GeneratedMatches = {
 };
 
 type PlayerStanding = Omit<TournamentRanking, "rank" | "advanced" | "needsPlayoff">;
+
+const SWISS_GROUP_NAME = "瑞士轮";
 
 export function createTournamentPlayer(input: { name: string; club?: string; seed?: number | null }): TournamentPlayer {
   return {
@@ -87,10 +89,53 @@ export function generateGroupStage(event: TournamentEvent, ruleSet: RuleSet): Ge
       groupNames,
       stage: "group_ready",
       rankings: [],
+      swissRounds: [],
       bracketNodes: [],
     }),
     matches,
   };
+}
+
+export function generateSwissFirstRound(event: TournamentEvent, ruleSet: RuleSet, existingMatches: Match[]): GeneratedMatches {
+  if (event.swissRounds.length > 0) return { event: touchEvent(event), matches: [] };
+  const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: SWISS_GROUP_NAME } : { ...player, groupName: "" }));
+  return generateSwissRound(
+    {
+      ...event,
+      players,
+      groupNames: [SWISS_GROUP_NAME],
+      rankings: [],
+      bracketNodes: [],
+      swissRounds: [],
+      stage: "swiss_ready",
+    },
+    existingMatches,
+    ruleSet,
+    1
+  );
+}
+
+export function lockCurrentSwissRound(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): TournamentEvent {
+  const currentRound = getCurrentSwissRound(event);
+  if (!currentRound || currentRound.status === "locked") return touchEvent(event);
+  const allFinished = currentRound.matchIds.every((matchId) => matches.find((match) => match.id === matchId)?.status === "finished");
+  if (!allFinished) return touchEvent(event);
+  const swissRounds = event.swissRounds.map((round) => (round.roundNo === currentRound.roundNo ? { ...round, status: "locked" as const } : round));
+  const nextStage = currentRound.roundNo >= event.formatConfig.swissRounds ? "swiss_finished" : "swiss_ready";
+  return touchEvent({
+    ...event,
+    swissRounds,
+    rankings: calculateRankings({ ...event, swissRounds }, matches, ruleSet),
+    stage: nextStage,
+  });
+}
+
+export function generateNextSwissRound(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  const currentRound = getCurrentSwissRound(event);
+  if (!currentRound || currentRound.status !== "locked" || event.swissRounds.length >= event.formatConfig.swissRounds) {
+    return { event: touchEvent(event), matches: [] };
+  }
+  return generateSwissRound(event, matches, ruleSet, currentRound.roundNo + 1);
 }
 
 export function calculateRankings(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): TournamentRanking[] {
@@ -100,19 +145,28 @@ export function calculateRankings(event: TournamentEvent, matches: Match[], rule
     .forEach((player) => standings.set(player.id, createEmptyStanding(player)));
 
   matches
-    .filter((match) => (match.tournamentStage === "group" || match.tournamentStage === "playoff") && match.status === "finished")
+    .filter((match) => (match.tournamentStage === "group" || match.tournamentStage === "playoff" || match.tournamentStage === "swiss") && match.status === "finished")
     .forEach((match) => applyMatchToStandings(standings, match, ruleSet, event));
+  // 瑞士轮轮空是赛事编排结果：给赛事积分，但不计入真实胜场、净胜分或相互胜负。
+  event.swissRounds
+    .filter((round) => round.status === "locked" && round.byePlayerId)
+    .forEach((round) => {
+      const standing = standings.get(round.byePlayerId as string);
+      if (standing) standing.eventPoints += getEventPoints(event, "win", 0);
+    });
 
   const baseRankings = Array.from(standings.values());
   const rankedByGroup = event.groupNames.flatMap((groupName) =>
     rankStandings(baseRankings.filter((standing) => standing.groupName === groupName), event, matches)
   );
   const groupAdvanced = new Set(
-    rankedByGroup
-      .filter((ranking) => ranking.rank <= event.formatConfig.groupAdvancers)
-      .map((ranking) => ranking.playerId)
+    event.formatConfig.format === "group_bracket"
+      ? rankedByGroup
+          .filter((ranking) => ranking.rank <= event.formatConfig.groupAdvancers)
+          .map((ranking) => ranking.playerId)
+      : []
   );
-  const targetAdvancers = Math.max(groupAdvanced.size, event.formatConfig.totalAdvancers);
+  const targetAdvancers = getTargetAdvancers(event);
   const globalRankings = rankStandings(baseRankings, event, matches);
   globalRankings.slice(0, targetAdvancers).forEach((ranking) => groupAdvanced.add(ranking.playerId));
   const playoffPlayerIds = findPlayoffCandidates(rankedByGroup, globalRankings, targetAdvancers, event, matches);
@@ -129,10 +183,11 @@ export function refreshTournamentRankings(event: TournamentEvent, matches: Match
   const allGroupMatchesFinished = matches
     .filter((match) => match.tournamentStage === "group")
     .every((match) => match.status === "finished");
+  const nextStage = event.formatConfig.format === "group_bracket" && allGroupMatchesFinished && rankings.length > 0 ? "group_finished" : event.stage;
   return touchEvent({
     ...event,
     rankings,
-    stage: allGroupMatchesFinished && rankings.length > 0 ? "group_finished" : event.stage,
+    stage: nextStage,
   });
 }
 
@@ -303,6 +358,143 @@ export function syncTournamentEvent(event: TournamentEvent, matches: Match[]): T
     bracketNodes,
     stage: allBracketDone ? "finished" : event.stage,
   });
+}
+
+export function getCurrentSwissRound(event: TournamentEvent): SwissRound | null {
+  if (event.swissRounds.length === 0) return null;
+  return [...event.swissRounds].sort((a, b) => b.roundNo - a.roundNo)[0];
+}
+
+function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: RuleSet, roundNo: number): GeneratedMatches {
+  const activePlayers = event.players.filter((player) => player.status === "active").sort(comparePlayersBySeed);
+  if (activePlayers.length < 2) return { event: touchEvent(event), matches: [] };
+
+  const rankings = roundNo === 1 ? [] : calculateRankings(event, matches, ruleSet);
+  const orderedPlayers = roundNo === 1 ? activePlayers : orderSwissPlayersByRanking(activePlayers, rankings);
+  const byePlayer = orderedPlayers.length % 2 === 1 && event.formatConfig.allowSwissBye ? selectSwissByePlayer(orderedPlayers, event.swissRounds) : null;
+  if (orderedPlayers.length % 2 === 1 && !byePlayer) {
+    return { event: touchEvent(event), matches: [] };
+  }
+  const pairingPlayers = byePlayer ? orderedPlayers.filter((player) => player.id !== byePlayer.id) : orderedPlayers;
+  const pairings = roundNo === 1 ? createSeededSwissFirstRoundPairings(pairingPlayers) : createSwissPairings(pairingPlayers, matches, rankings, event.formatConfig.avoidClubInSwiss);
+  if (!pairings) return { event: touchEvent(event), matches: [] };
+
+  const generatedMatches = pairings.map(([red, blue], index) => createSwissMatch({
+    matchNo: `${matches.length + index + 1}`,
+    roundNo,
+    red,
+    blue,
+    ruleSet,
+  }));
+  const swissRound: SwissRound = {
+    roundNo,
+    status: "published",
+    matchIds: generatedMatches.map((match) => match.id),
+    byePlayerId: byePlayer?.id ?? null,
+  };
+
+  return {
+    event: touchEvent({
+      ...event,
+      groupNames: [SWISS_GROUP_NAME],
+      rankings,
+      swissRounds: [...event.swissRounds, swissRound],
+      stage: "swiss_ready",
+    }),
+    matches: generatedMatches,
+  };
+}
+
+function createSwissMatch(input: { matchNo: string; roundNo: number; red: TournamentPlayer; blue: TournamentPlayer; ruleSet: RuleSet }): Match {
+  const groupName = `瑞士轮第${input.roundNo}轮`;
+  const match = createEmptyMatch({
+    matchNo: input.matchNo,
+    groupName,
+    piste: "未分配",
+    redName: input.red.name,
+    redClub: input.red.club,
+    blueName: input.blue.name,
+    blueClub: input.blue.club,
+    ruleSet: input.ruleSet,
+  });
+  return {
+    ...match,
+    tournamentStage: "swiss",
+    tournamentRound: input.roundNo,
+    redPlayerId: input.red.id,
+    bluePlayerId: input.blue.id,
+    events: [createMatchEvent(match.id, "match_created", `${groupName}生成场次`)],
+  };
+}
+
+function orderSwissPlayersByRanking(players: TournamentPlayer[], rankings: TournamentRanking[]) {
+  const rankingByPlayerId = new Map(rankings.map((ranking) => [ranking.playerId, ranking]));
+  return [...players].sort((a, b) => {
+    const rankingA = rankingByPlayerId.get(a.id);
+    const rankingB = rankingByPlayerId.get(b.id);
+    if (rankingA && rankingB) return rankingA.rank - rankingB.rank;
+    if (rankingA) return -1;
+    if (rankingB) return 1;
+    return comparePlayersBySeed(a, b);
+  });
+}
+
+function selectSwissByePlayer(players: TournamentPlayer[], rounds: SwissRound[]) {
+  const previousByePlayerIds = new Set(rounds.map((round) => round.byePlayerId).filter(Boolean));
+  return [...players].reverse().find((player) => !previousByePlayerIds.has(player.id)) ?? null;
+}
+
+function createSeededSwissFirstRoundPairings(players: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> {
+  const half = players.length / 2;
+  return players.slice(0, half).map((red, index) => [red, players[index + half]]);
+}
+
+function createSwissPairings(
+  players: TournamentPlayer[],
+  matches: Match[],
+  rankings: TournamentRanking[],
+  avoidSameClub: boolean
+): Array<[TournamentPlayer, TournamentPlayer]> | null {
+  const rankingByPlayerId = new Map(rankings.map((ranking) => [ranking.playerId, ranking]));
+  const pairRecursively = (remaining: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> | null => {
+    if (remaining.length === 0) return [];
+    const [red, ...candidates] = remaining;
+    const orderedCandidates = [...candidates].sort((a, b) => compareSwissPairCandidate(red, a, b, rankingByPlayerId, avoidSameClub));
+    for (const blue of orderedCandidates) {
+      if (hasSwissPairing(red.id, blue.id, matches)) continue;
+      const rest = candidates.filter((candidate) => candidate.id !== blue.id);
+      const nextPairs = pairRecursively(rest);
+      if (nextPairs) return [[red, blue], ...nextPairs];
+    }
+    return null;
+  };
+  return pairRecursively(players);
+}
+
+function compareSwissPairCandidate(
+  red: TournamentPlayer,
+  a: TournamentPlayer,
+  b: TournamentPlayer,
+  rankings: Map<string, TournamentRanking>,
+  avoidSameClub: boolean
+) {
+  const redPoints = rankings.get(red.id)?.eventPoints ?? 0;
+  const pointGapA = Math.abs(redPoints - (rankings.get(a.id)?.eventPoints ?? 0));
+  const pointGapB = Math.abs(redPoints - (rankings.get(b.id)?.eventPoints ?? 0));
+  if (pointGapA !== pointGapB) return pointGapA - pointGapB;
+  const clubPenaltyA = avoidSameClub && red.club && a.club && red.club === a.club ? 1 : 0;
+  const clubPenaltyB = avoidSameClub && red.club && b.club && red.club === b.club ? 1 : 0;
+  if (clubPenaltyA !== clubPenaltyB) return clubPenaltyA - clubPenaltyB;
+  return comparePlayersBySeed(a, b);
+}
+
+function hasSwissPairing(redPlayerId: string, bluePlayerId: string, matches: Match[]) {
+  return matches.some(
+    (match) =>
+      match.tournamentStage === "swiss" &&
+      ((match.redPlayerId === redPlayerId && match.bluePlayerId === bluePlayerId) ||
+        (match.redPlayerId === bluePlayerId && match.bluePlayerId === redPlayerId))
+  );
 }
 
 function createPairedBracketMatches(
@@ -492,7 +684,7 @@ function compareByRankingRule(ruleKey: RankingRuleKey, a: PlayerStanding, b: Pla
 function compareHeadToHead(a: PlayerStanding, b: PlayerStanding, matches: Match[]) {
   const directMatches = matches.filter(
     (match) =>
-      match.tournamentStage === "group" &&
+      (match.tournamentStage === "group" || match.tournamentStage === "swiss") &&
       match.status === "finished" &&
       ((match.redPlayerId === a.playerId && match.bluePlayerId === b.playerId) ||
         (match.redPlayerId === b.playerId && match.bluePlayerId === a.playerId))
@@ -512,6 +704,11 @@ function getEnabledRankingRules(event: TournamentEvent) {
     .sort((a, b) => a.priority - b.priority);
 }
 
+function getTargetAdvancers(event: TournamentEvent) {
+  if (event.formatConfig.format === "swiss_bracket") return Math.max(0, event.formatConfig.swissAdvancers);
+  return Math.max(0, event.formatConfig.totalAdvancers);
+}
+
 function findPlayoffCandidates(
   rankedByGroup: TournamentRanking[],
   globalRankings: TournamentRanking[],
@@ -524,7 +721,8 @@ function findPlayoffCandidates(
 
   event.groupNames.forEach((groupName) => {
     const groupRankings = rankedByGroup.filter((ranking) => ranking.groupName === groupName);
-    addBoundaryTiePlayers(playerIds, groupRankings, event.formatConfig.groupAdvancers, event, matches);
+    const groupCutoff = event.formatConfig.format === "swiss_bracket" ? event.formatConfig.swissAdvancers : event.formatConfig.groupAdvancers;
+    addBoundaryTiePlayers(playerIds, groupRankings, groupCutoff, event, matches);
   });
   addBoundaryTiePlayers(playerIds, globalRankings, targetAdvancers, event, matches);
   return playerIds;

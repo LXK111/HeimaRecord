@@ -32,9 +32,13 @@ import {
 import {
   advanceBracket,
   calculateRankings,
+  generateNextSwissRound,
   generateGroupStage,
   generateInitialBracket,
   generatePlayoffMatches,
+  generateSwissFirstRound,
+  getCurrentSwissRound,
+  lockCurrentSwissRound,
   parsePlayersText,
   refreshTournamentRankings,
   syncTournamentEvent,
@@ -80,6 +84,8 @@ function App() {
   const groupedMatches = useMemo(() => groupMatchesByName(state.matches), [state.matches]);
   const syncedEvent = useMemo(() => syncTournamentEvent(state.event, state.matches), [state.event, state.matches]);
   const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
+  const currentSwissRound = useMemo(() => getCurrentSwissRound(syncedEvent), [syncedEvent]);
+  const isSwissFormat = state.event.formatConfig.format === "swiss_bracket";
 
   useEffect(() => {
     loadState()
@@ -247,6 +253,7 @@ function App() {
           stage: "setup",
           groupNames: [],
           rankings: [],
+          swissRounds: [],
           bracketNodes: [],
         },
       }));
@@ -266,6 +273,7 @@ function App() {
         stage: "setup",
         groupNames: [],
         rankings: [],
+        swissRounds: [],
         bracketNodes: [],
       },
     }));
@@ -365,12 +373,51 @@ function App() {
     setTournamentMessage("已生成小组循环赛。");
   }
 
+  function generateSwissOpeningRound() {
+    patchState((current) => {
+      const nonTournamentMatches = current.matches.filter((match) => !match.tournamentStage);
+      const generated = generateSwissFirstRound(current.event, current.ruleSet, nonTournamentMatches);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...nonTournamentMatches, ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setActiveView("matches");
+    setTournamentMessage("已生成瑞士轮第 1 轮。");
+  }
+
+  function lockSwissRound() {
+    const round = getCurrentSwissRound(syncedEvent);
+    const allFinished = round?.matchIds.every((matchId) => state.matches.find((match) => match.id === matchId)?.status === "finished") ?? false;
+    patchState((current) => ({
+      ...current,
+      event: lockCurrentSwissRound(current.event, current.matches, current.ruleSet),
+    }));
+    setTournamentMessage(allFinished ? "已锁定当前瑞士轮并刷新排名。" : "当前瑞士轮仍有未完成场次，暂不能锁定。");
+  }
+
+  function generateFollowingSwissRound() {
+    patchState((current) => {
+      const generated = generateNextSwissRound(current.event, current.matches, current.ruleSet);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...current.matches, ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setActiveView("matches");
+    setTournamentMessage("已尝试生成下一轮瑞士轮；若未新增场次，请确认当前轮已锁定且未超过配置轮数。");
+  }
+
   function refreshRankings() {
     patchState((current) => ({
       ...current,
       event: refreshTournamentRankings(current.event, current.matches, current.ruleSet),
     }));
-    setTournamentMessage("已刷新小组排名。");
+    setTournamentMessage(isSwissFormat ? "已刷新瑞士轮排名。" : "已刷新小组排名。");
   }
 
   function generatePlayoffs() {
@@ -515,14 +562,50 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>赛事编排</h2>
-                <p>第一阶段支持小组循环 + 单败淘汰 + 季军赛。</p>
+                <p>支持小组循环或瑞士轮作为预赛，再进入单败淘汰和季军赛。</p>
               </div>
               <span className="stage-badge">{tournamentStageLabel(syncedEvent.stage)}</span>
             </div>
             <div className="rules-grid">
-              <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
-              <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
-              <NumberField label="总晋级人数" value={state.event.formatConfig.totalAdvancers} onChange={(value) => updateTournamentConfig({ totalAdvancers: value })} />
+              <label className="field">
+                <span>赛制</span>
+                <select
+                  value={state.event.formatConfig.format}
+                  onChange={(event) => updateTournamentConfig({ format: event.target.value as TournamentState["event"]["formatConfig"]["format"] })}
+                >
+                  <option value="group_bracket">小组循环 + 单败淘汰</option>
+                  <option value="swiss_bracket">瑞士轮 + 单败淘汰</option>
+                </select>
+              </label>
+              {!isSwissFormat && (
+                <>
+                  <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
+                  <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
+                  <NumberField label="总晋级人数" value={state.event.formatConfig.totalAdvancers} onChange={(value) => updateTournamentConfig({ totalAdvancers: value })} />
+                </>
+              )}
+              {isSwissFormat && (
+                <>
+                  <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} onChange={(value) => updateTournamentConfig({ swissRounds: value })} />
+                  <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} onChange={(value) => updateTournamentConfig({ swissAdvancers: value })} />
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={state.event.formatConfig.avoidClubInSwiss}
+                      onChange={(event) => updateTournamentConfig({ avoidClubInSwiss: event.target.checked })}
+                    />
+                    瑞士轮尽量避开同单位
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={state.event.formatConfig.allowSwissBye}
+                      onChange={(event) => updateTournamentConfig({ allowSwissBye: event.target.checked })}
+                    />
+                    奇数人数允许轮空
+                  </label>
+                </>
+              )}
               <label className="toggle-row">
                 <input
                   type="checkbox"
@@ -533,16 +616,48 @@ function App() {
               </label>
             </div>
             <div className="stage-actions">
-              <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>
-              <button onClick={refreshRankings}>刷新小组排名</button>
-              <button onClick={generateBracket} disabled={liveRankings.filter((ranking) => ranking.advanced).length < 2}>生成淘汰赛</button>
+              {!isSwissFormat && <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>}
+              {isSwissFormat && (
+                <>
+                  <button onClick={generateSwissOpeningRound} disabled={state.event.players.length < 2 || syncedEvent.swissRounds.length > 0}>生成瑞士第 1 轮</button>
+                  <button onClick={lockSwissRound} disabled={!currentSwissRound || currentSwissRound.status === "locked"}>锁定当前瑞士轮</button>
+                  <button
+                    onClick={generateFollowingSwissRound}
+                    disabled={!currentSwissRound || currentSwissRound.status !== "locked" || syncedEvent.swissRounds.length >= state.event.formatConfig.swissRounds}
+                  >
+                    生成下一轮瑞士轮
+                  </button>
+                </>
+              )}
+              <button onClick={refreshRankings}>{isSwissFormat ? "刷新瑞士轮排名" : "刷新小组排名"}</button>
+              <button
+                onClick={generateBracket}
+                disabled={liveRankings.filter((ranking) => ranking.advanced).length < 2 || (isSwissFormat && syncedEvent.stage !== "swiss_finished")}
+              >
+                生成淘汰赛
+              </button>
               <button onClick={advanceBracketRound}>推进淘汰赛</button>
             </div>
+            {isSwissFormat && (
+              <div className="swiss-round-list">
+                {syncedEvent.swissRounds.map((round) => {
+                  const byePlayer = round.byePlayerId ? syncedEvent.players.find((player) => player.id === round.byePlayerId) : null;
+                  const finishedCount = round.matchIds.filter((matchId) => state.matches.find((match) => match.id === matchId)?.status === "finished").length;
+                  return (
+                    <div key={round.roundNo} className="swiss-round-row">
+                      <strong>第 {round.roundNo} 轮</strong>
+                      <span>{round.status === "locked" ? "已锁定" : "已发布"}</span>
+                      <small>{finishedCount} / {round.matchIds.length} 场完成{byePlayer ? ` · 轮空：${byePlayer.name}` : ""}</small>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {tournamentMessage && <p className="notice">{tournamentMessage}</p>}
             <div className="metric-grid">
               <div><strong>{state.event.players.length}</strong><span>选手</span></div>
-              <div><strong>{syncedEvent.groupNames.length}</strong><span>小组</span></div>
-              <div><strong>{state.matches.filter((match) => match.tournamentStage === "group").length}</strong><span>小组赛</span></div>
+              <div><strong>{isSwissFormat ? syncedEvent.swissRounds.length : syncedEvent.groupNames.length}</strong><span>{isSwissFormat ? "瑞士轮" : "小组"}</span></div>
+              <div><strong>{state.matches.filter((match) => match.tournamentStage === (isSwissFormat ? "swiss" : "group")).length}</strong><span>{isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
               <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
             </div>
           </section>
@@ -668,7 +783,7 @@ function App() {
           <section className="panel tournament-panel">
             <div className="result-toolbar">
               <div>
-                <h2>小组排名</h2>
+                <h2>{isSwissFormat ? "瑞士轮排名" : "小组排名"}</h2>
                 <p>排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。</p>
               </div>
               <div className="stage-actions">
@@ -688,7 +803,7 @@ function App() {
               <div key={groupName} className="ranking-section">
                 <h2>{groupName}</h2>
                 <DataTable
-                  headers={["组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级", "附加赛"]}
+                  headers={[isSwissFormat ? "瑞士轮名次" : "组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级", "附加赛"]}
                   rows={liveRankings
                     .filter((ranking) => ranking.groupName === groupName)
                     .map((ranking) => [
@@ -703,11 +818,11 @@ function App() {
                       ranking.advanced ? "是" : "否",
                       ranking.needsPlayoff ? "需要" : "-",
                     ])}
-                  emptyText="暂无排名，请先生成小组赛并记录结果。"
+                  emptyText={isSwissFormat ? "暂无排名，请先生成瑞士轮并记录结果。" : "暂无排名，请先生成小组赛并记录结果。"}
                 />
               </div>
             ))}
-            {syncedEvent.groupNames.length === 0 && <EmptyState text="暂无分组，请先在编排页生成小组循环赛。" />}
+            {syncedEvent.groupNames.length === 0 && <EmptyState text={isSwissFormat ? "暂无瑞士轮排名，请先在编排页生成瑞士轮。" : "暂无分组，请先在编排页生成小组循环赛。"} />}
           </section>
         )}
 
@@ -855,7 +970,7 @@ function viewTitle(view: ViewKey) {
     tournament: "赛事编排",
     matches: "比赛场次",
     console: "比赛控制台",
-    rankings: "小组排名",
+    rankings: "赛事排名",
     bracket: "淘汰签表",
     rules: "规则配置",
     results: "结果导出",
@@ -878,6 +993,8 @@ function tournamentStageLabel(stage: TournamentState["event"]["stage"]) {
     setup: "未编排",
     group_ready: "小组赛",
     group_finished: "小组赛完成",
+    swiss_ready: "瑞士轮",
+    swiss_finished: "瑞士轮完成",
     bracket_ready: "淘汰赛",
     finished: "赛事完成",
   };

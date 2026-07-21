@@ -598,6 +598,27 @@ h1 {
   color: #6d746f;
 }
 
+.swiss-round-list {
+  display: grid;
+  gap: 10px;
+}
+
+.swiss-round-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto minmax(180px, 2fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e1d7c8;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.swiss-round-row span,
+.swiss-round-row small {
+  color: #6d746f;
+}
+
 .ranking-section {
   display: grid;
   gap: 10px;
@@ -882,7 +903,8 @@ th {
 
   .adjudication-panel,
   .adjudication-grid,
-  .ranking-rule-row {
+  .ranking-rule-row,
+  .swiss-round-row {
     grid-template-columns: 1fr;
   }
 

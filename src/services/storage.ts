@@ -49,9 +49,14 @@ export function createDefaultTournamentEvent(): TournamentEvent {
     players: [],
     stage: "setup",
     formatConfig: {
+      format: "group_bracket",
       groupSize: 6,
       groupAdvancers: 2,
       totalAdvancers: 4,
+      swissRounds: 5,
+      swissAdvancers: 8,
+      avoidClubInSwiss: true,
+      allowSwissBye: true,
       generateThirdPlaceMatch: true,
     },
     eventPointConfig: createDefaultEventPointConfig(),
@@ -59,6 +64,7 @@ export function createDefaultTournamentEvent(): TournamentEvent {
     disciplinePointConfig: createDefaultDisciplinePointConfig(ruleSet),
     groupNames: [],
     rankings: [],
+    swissRounds: [],
     bracketNodes: [],
     updatedAt: new Date().toISOString(),
   };
@@ -89,6 +95,7 @@ function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentE
     },
     groupNames: event?.groupNames ?? [],
     rankings: event?.rankings ?? [],
+    swissRounds: event?.swissRounds ?? [],
     bracketNodes: event?.bracketNodes ?? [],
     updatedAt: event?.updatedAt ?? new Date().toISOString(),
   };
