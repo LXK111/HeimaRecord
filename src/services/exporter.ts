@@ -63,6 +63,11 @@ export async function exportMatchesToExcel(matches: Match[]) {
 }
 
 export async function exportTournamentResultsToExcel(state: TournamentState, liveRankings: TournamentRanking[]) {
+  const workbook = buildTournamentResultsWorkbook(state, liveRankings);
+  await downloadWorkbook(workbook, "heima-record-tournament-results.xlsx");
+}
+
+export function buildTournamentResultsWorkbook(state: TournamentState, liveRankings: TournamentRanking[]) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "heima-record";
   workbook.created = new Date();
@@ -79,7 +84,7 @@ export async function exportTournamentResultsToExcel(state: TournamentState, liv
   addTableWorksheet(workbook, "淘汰签表", ["阶段", "轮次", "节点", "红方", "蓝方", "比分", "胜方", "状态"], buildBracketRows(state));
   addTableWorksheet(workbook, "全部场次", Object.keys(buildRows(state.matches)[0] ?? { 场次编号: "" }), buildRows(state.matches));
 
-  await downloadWorkbook(workbook, "heima-record-tournament-results.xlsx");
+  return workbook;
 }
 
 function buildSummaryRows(state: TournamentState, result: FinalResult): ExportRow[] {

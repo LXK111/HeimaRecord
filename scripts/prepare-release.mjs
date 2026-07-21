@@ -35,6 +35,10 @@ const singleFileHtml = html
 
 writeFileSync(resolve(releaseDir, "index.html"), singleFileHtml);
 copyFileSync(resolve(root, "docs", "使用说明.md"), resolve(releaseDir, "使用说明.md"));
+copyFileSync(
+  resolve(root, "docs", "final_document", "赛事现场验收与交付说明.md"),
+  resolve(releaseDir, "赛事验收清单.md")
+);
 
 const sampleCsv = readFileSync(resolve(root, "release-assets", "示例导入模板.csv"), "utf8");
 writeFileSync(
