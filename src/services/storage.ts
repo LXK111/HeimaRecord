@@ -56,6 +56,7 @@ export function createDefaultTournamentEvent(): TournamentEvent {
       swissRounds: 5,
       swissAdvancers: 8,
       swissGroupCount: 1,
+      randomizeSwissFirstRound: false,
       avoidClubInSwiss: true,
       allowSwissBye: true,
       generateThirdPlaceMatch: true,

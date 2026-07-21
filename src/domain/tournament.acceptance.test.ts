@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultRuleSet } from "./rules";
 import {
   advanceBracket,
@@ -61,6 +61,28 @@ describe("赛事编排验收", () => {
     const finishedEvent = lockCurrentSwissRound(secondRound.event, allMatches, defaultRuleSet);
     expect(finishedEvent.stage).toBe("swiss_finished");
     expect(calculateRankings(finishedEvent, allMatches, defaultRuleSet)).toHaveLength(8);
+  });
+
+  it("瑞士轮首轮可忽略种子随机配对，且轮空规则保持不变", () => {
+    const event = createEvent("swiss_bracket", 8);
+    const seededRound = generateSwissFirstRound(event, defaultRuleSet, []);
+    const randomEvent = {
+      ...event,
+      formatConfig: { ...event.formatConfig, randomizeSwissFirstRound: true },
+    };
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    const randomizedRound = generateSwissFirstRound(randomEvent, defaultRuleSet, []);
+    randomSpy.mockRestore();
+
+    expect(randomizedRound.matches.map(pairingKey)).not.toEqual(seededRound.matches.map(pairingKey));
+    expect(new Set(randomizedRound.matches.flatMap((match) => [match.redPlayerId, match.bluePlayerId])).size).toBe(8);
+    expect(randomizedRound.matches.every((match) => match.events[0]?.label.includes("随机配对"))).toBe(true);
+
+    const oddEvent = createEvent("swiss_bracket", 5, { randomizeSwissFirstRound: true });
+    const oddRandomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const oddRound = generateSwissFirstRound(oddEvent, defaultRuleSet, []);
+    oddRandomSpy.mockRestore();
+    expect(oddRound.event.swissRounds[0].byePlayerId).toBe(oddEvent.players[4].id);
   });
 
   it("10 人直接单败生成六个轮空并完成季军赛", () => {

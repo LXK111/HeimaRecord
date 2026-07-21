@@ -699,6 +699,15 @@ function App() {
                     max={26}
                     onChange={(value) => updateTournamentConfig({ swissGroupCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })}
                   />
+                  <label className="toggle-row" title={syncedEvent.swissRounds.length > 0 ? "首轮生成后不可修改" : undefined}>
+                    <input
+                      type="checkbox"
+                      checked={state.event.formatConfig.randomizeSwissFirstRound}
+                      disabled={syncedEvent.swissRounds.length > 0}
+                      onChange={(event) => updateTournamentConfig({ randomizeSwissFirstRound: event.target.checked })}
+                    />
+                    首轮随机配对（忽略种子）
+                  </label>
                   <label className="toggle-row">
                     <input
                       type="checkbox"

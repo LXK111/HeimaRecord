@@ -518,7 +518,12 @@ function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: R
     return { event: touchEvent(event), matches: [] };
   }
   const pairingPlayers = byePlayer ? orderedPlayers.filter((player) => player.id !== byePlayer.id) : orderedPlayers;
-  const pairings = roundNo === 1 ? createSeededSwissFirstRoundPairings(pairingPlayers) : createSwissPairings(pairingPlayers, matches, rankings, event.formatConfig.avoidClubInSwiss);
+  const randomizeFirstRound = roundNo === 1 && event.formatConfig.randomizeSwissFirstRound;
+  const pairings = roundNo === 1
+    ? randomizeFirstRound
+      ? createRandomSwissFirstRoundPairings(pairingPlayers)
+      : createSeededSwissFirstRoundPairings(pairingPlayers)
+    : createSwissPairings(pairingPlayers, matches, rankings, event.formatConfig.avoidClubInSwiss);
   if (!pairings) return { event: touchEvent(event), matches: [] };
 
   const swissGroupCount = clampSwissGroupCount(event.formatConfig.swissGroupCount);
@@ -526,6 +531,7 @@ function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: R
     matchNo: `${matches.length + index + 1}`,
     roundNo,
     groupName: swissVenueGroupName(index % swissGroupCount),
+    isRandomFirstRound: randomizeFirstRound,
     red,
     blue,
     ruleSet,
@@ -549,8 +555,9 @@ function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: R
   };
 }
 
-function createSwissMatch(input: { matchNo: string; roundNo: number; groupName: string; red: TournamentPlayer; blue: TournamentPlayer; ruleSet: RuleSet }): Match {
+function createSwissMatch(input: { matchNo: string; roundNo: number; groupName: string; isRandomFirstRound: boolean; red: TournamentPlayer; blue: TournamentPlayer; ruleSet: RuleSet }): Match {
   const roundLabel = `瑞士轮第${input.roundNo}轮`;
+  const pairingLabel = input.isRandomFirstRound ? `${roundLabel}随机配对` : roundLabel;
   const match = createEmptyMatch({
     matchNo: input.matchNo,
     groupName: input.groupName,
@@ -567,7 +574,7 @@ function createSwissMatch(input: { matchNo: string; roundNo: number; groupName: 
     tournamentRound: input.roundNo,
     redPlayerId: input.red.id,
     bluePlayerId: input.blue.id,
-    events: [createMatchEvent(match.id, "match_created", `${roundLabel}生成场次，分配至${input.groupName}`)],
+    events: [createMatchEvent(match.id, "match_created", `${pairingLabel}生成场次，分配至${input.groupName}`)],
   };
 }
 
@@ -624,6 +631,20 @@ function selectSwissByePlayer(players: TournamentPlayer[], rounds: SwissRound[])
 function createSeededSwissFirstRoundPairings(players: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> {
   const half = players.length / 2;
   return players.slice(0, half).map((red, index) => [red, players[index + half]]);
+}
+
+function createRandomSwissFirstRoundPairings(players: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> {
+  const shuffled = [...players];
+  // Fisher-Yates 只在生成首轮时执行一次，生成后的对阵由赛事状态持久化。
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const targetIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[targetIndex]] = [shuffled[targetIndex], shuffled[index]];
+  }
+  const pairings: Array<[TournamentPlayer, TournamentPlayer]> = [];
+  for (let index = 0; index < shuffled.length; index += 2) {
+    pairings.push([shuffled[index], shuffled[index + 1]]);
+  }
+  return pairings;
 }
 
 function createSwissPairings(
