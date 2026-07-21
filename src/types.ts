@@ -175,6 +175,7 @@ export interface TournamentFormatConfig {
   totalAdvancers: number;
   swissRounds: number;
   swissAdvancers: number;
+  swissGroupCount: number;
   avoidClubInSwiss: boolean;
   allowSwissBye: boolean;
   generateThirdPlaceMatch: boolean;

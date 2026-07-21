@@ -3,12 +3,14 @@ import {
   Download,
   FileSpreadsheet,
   FolderUp,
+  Home,
   Pause,
   Play,
   RotateCcw,
   Save,
   ShieldAlert,
   TimerReset,
+  Trash2,
   Upload,
 } from "lucide-react";
 import {
@@ -45,6 +47,14 @@ import {
   refreshTournamentRankings,
   syncTournamentEvent,
 } from "./domain/tournament";
+import {
+  clearTournamentArrangement,
+  getTournamentProgress,
+  removeImportedMatches,
+  replaceMatchesWithImported,
+  resetTournamentState,
+  updateArrangementMatch,
+} from "./domain/tournamentState";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
 import { exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
@@ -53,7 +63,7 @@ import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
 import { createInitialState, loadState, saveState } from "./services/storage";
 import type { AdjudicationInput, Match, RuleSet, TournamentState, Winner } from "./types";
 
-type ViewKey = "import" | "players" | "tournament" | "matches" | "console" | "rankings" | "bracket" | "rules" | "results";
+type ViewKey = "home" | "players" | "tournament" | "matches" | "console" | "rankings" | "bracket" | "rules" | "results";
 
 type MatchGroup = {
   name: string;
@@ -62,7 +72,7 @@ type MatchGroup = {
 
 function App() {
   const [state, setState] = useState<TournamentState>(createInitialState);
-  const [activeView, setActiveView] = useState<ViewKey>("import");
+  const [activeView, setActiveView] = useState<ViewKey>("home");
   const [isLoading, setIsLoading] = useState(true);
   const [importMessage, setImportMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
@@ -84,6 +94,8 @@ function App() {
     [state.matches, state.selectedMatchId]
   );
   const groupedMatches = useMemo(() => groupMatchesByName(state.matches), [state.matches]);
+  const arrangementMatches = useMemo(() => state.matches.filter((match) => match.tournamentStage), [state.matches]);
+  const tournamentProgress = useMemo(() => getTournamentProgress(state), [state]);
   const syncedEvent = useMemo(() => syncTournamentEvent(state.event, state.matches), [state.event, state.matches]);
   const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
   const currentSwissRound = useMemo(() => getCurrentSwissRound(syncedEvent), [syncedEvent]);
@@ -97,7 +109,7 @@ function App() {
     loadState()
       .then((stored) => {
         setState(stored);
-        if (stored.matches.length > 0) setActiveView("matches");
+        setActiveView("home");
       })
       .finally(() => setIsLoading(false));
   }, []);
@@ -137,6 +149,7 @@ function App() {
 
   async function handleImport(file: File | null) {
     if (!file) return;
+    if (state.matches.length > 0 && !window.confirm("导入场次将替换当前全部场次，并清空现有赛事编排。是否继续？")) return;
     setImportMessage("正在解析文件...");
     try {
       const matches = await parseMatchFile(file, state.ruleSet);
@@ -144,11 +157,7 @@ function App() {
         setImportMessage("没有识别到有效场次，请检查红方、蓝方字段。");
         return;
       }
-      patchState((current) => ({
-        ...current,
-        matches,
-        selectedMatchId: matches[0]?.id ?? null,
-      }));
+      patchState((current) => replaceMatchesWithImported(current, matches));
       setActiveView("matches");
       setImportMessage(`已导入 ${matches.length} 场比赛。`);
     } catch (error) {
@@ -162,11 +171,39 @@ function App() {
     try {
       const backupState = await parseStateBackup(file);
       setState(backupState);
-      setActiveView("matches");
+      setActiveView("home");
       setBackupMessage(`已恢复备份，包含 ${backupState.matches.length} 场比赛。`);
     } catch (error) {
       setBackupMessage(error instanceof Error ? error.message : "恢复失败，请检查 JSON 备份文件。");
     }
+  }
+
+  function resetTournament() {
+    if (!window.confirm("将清空选手、场次、比分、排名和签表，但保留当前计分规则。是否重置赛事？")) return;
+    patchState((current) => resetTournamentState(current, createInitialState()));
+    setImportMessage("");
+    setPlayerMessage("");
+    setTournamentMessage("赛事已重置，当前计分规则已保留。");
+    setActiveView("home");
+  }
+
+  function clearArrangement() {
+    if (!window.confirm("将删除赛事编排生成的场次及其比赛结果，保留选手名单、赛制配置、规则和普通导入场次。是否继续？")) return;
+    patchState(clearTournamentArrangement);
+    setTournamentMessage("已清空赛事编排，可重新生成场次。");
+  }
+
+  function removeMatch(match: Match) {
+    if (match.tournamentStage) return;
+    if (!window.confirm(`确认移除第 ${match.matchNo} 场：${match.red.name} vs ${match.blue.name}？`)) return;
+    patchState((current) => removeImportedMatches(current, [match.id]));
+  }
+
+  function removeMatchGroup(group: MatchGroup) {
+    const importedMatches = group.matches.filter((match) => !match.tournamentStage);
+    if (importedMatches.length !== group.matches.length || importedMatches.length === 0) return;
+    if (!window.confirm(`确认移除“${group.name}”及其中 ${group.matches.length} 场比赛？`)) return;
+    patchState((current) => removeImportedMatches(current, importedMatches.map((match) => match.id)));
   }
 
   function setMatchStatus(status: Match["status"]) {
@@ -505,7 +542,7 @@ function App() {
         </div>
         <nav>
           {[
-            ["import", "导入"],
+            ["home", "首页"],
             ["players", "选手"],
             ["tournament", "编排"],
             ["matches", "场次"],
@@ -534,15 +571,48 @@ function App() {
           </div>
         </header>
 
-        {activeView === "import" && (
-          <section className="panel import-panel">
-            <label className="dropzone">
-              <Upload size={28} />
-              <strong>导入 Excel / CSV 场次表</strong>
-              <span>支持 .xlsx、.xls、.csv，红方和蓝方姓名为必填字段</span>
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleImport(event.target.files?.[0] ?? null)} />
-            </label>
-            {importMessage && <p className="notice">{importMessage}</p>}
+        {activeView === "home" && (
+          <section className="home-view">
+            <div className="home-summary">
+              <div>
+                <span className="section-kicker">当前赛事</span>
+                <h2>{state.name}</h2>
+                <p>{tournamentFormatLabel(state.event.formatConfig.format)} · {tournamentStageLabel(syncedEvent.stage)}</p>
+              </div>
+              <button className="danger-action" onClick={resetTournament}>
+                <RotateCcw size={18} />
+                重置赛事
+              </button>
+            </div>
+            <div className="home-metrics">
+              <div>
+                <span>参赛人数</span>
+                <strong>{state.event.players.filter((player) => player.status === "active").length}</strong>
+              </div>
+              <div>
+                <span>比赛进度</span>
+                <strong>{tournamentProgress.completed} / {tournamentProgress.total}</strong>
+              </div>
+              <div>
+                <span>当前阶段</span>
+                <strong>{tournamentStageLabel(syncedEvent.stage)}</strong>
+              </div>
+            </div>
+            <div className="progress-section">
+              <div>
+                <span>总进度</span>
+                <strong>{tournamentProgress.percent}%</strong>
+              </div>
+              <div className="progress-track" aria-label={`赛事完成进度 ${tournamentProgress.percent}%`}>
+                <span style={{ width: `${tournamentProgress.percent}%` }} />
+              </div>
+            </div>
+            <div className="home-actions">
+              <button onClick={() => setActiveView("players")}><Home size={18} />管理选手</button>
+              <button onClick={() => setActiveView("tournament")}><FileSpreadsheet size={18} />赛事编排</button>
+              <button onClick={() => setActiveView("matches")}><TimerReset size={18} />查看场次</button>
+            </div>
+            {tournamentMessage && <p className="notice">{tournamentMessage}</p>}
           </section>
         )}
 
@@ -614,8 +684,15 @@ function App() {
               )}
               {isSwissFormat && (
                 <>
-                  <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} onChange={(value) => updateTournamentConfig({ swissRounds: value })} />
-                  <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} onChange={(value) => updateTournamentConfig({ swissAdvancers: value })} />
+                  <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} min={1} onChange={(value) => updateTournamentConfig({ swissRounds: value })} />
+                  <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} min={2} onChange={(value) => updateTournamentConfig({ swissAdvancers: value })} />
+                  <NumberField
+                    label="现场场地组数"
+                    value={state.event.formatConfig.swissGroupCount}
+                    min={1}
+                    max={26}
+                    onChange={(value) => updateTournamentConfig({ swissGroupCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })}
+                  />
                   <label className="toggle-row">
                     <input
                       type="checkbox"
@@ -692,13 +769,94 @@ function App() {
               <div><strong>{state.matches.filter((match) => isNoPreliminaryFormat ? isBracketStage(match.tournamentStage) : match.tournamentStage === (isSwissFormat ? "swiss" : "group")).length}</strong><span>{isNoPreliminaryFormat ? "淘汰场次" : isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
               <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
             </div>
+            <section className="arrangement-section">
+              <div className="result-toolbar">
+                <div>
+                  <h2>编排结果</h2>
+                  <p>未开始的赛事场次可调整场次编号、现场分组和剑道；对阵关系由赛制引擎维护。</p>
+                </div>
+                <button className="danger-action" onClick={clearArrangement} disabled={arrangementMatches.length === 0}>
+                  <Trash2 size={18} />
+                  清空编排
+                </button>
+              </div>
+              {arrangementMatches.length > 0 ? (
+                <div className="table-wrap arrangement-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>场次编号</th>
+                        <th>阶段 / 轮次</th>
+                        <th>现场分组</th>
+                        <th>剑道</th>
+                        <th>对阵</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {arrangementMatches.map((match) => {
+                        const isEditable = match.status === "pending";
+                        return (
+                          <tr key={match.id}>
+                            <td>
+                              <input
+                                aria-label={`${match.matchNo} 场场次编号`}
+                                value={match.matchNo}
+                                disabled={!isEditable}
+                                onChange={(event) => patchState((current) => updateArrangementMatch(current, match.id, { matchNo: event.target.value }))}
+                              />
+                            </td>
+                            <td>{tournamentMatchStageLabel(match)}</td>
+                            <td>
+                              <input
+                                aria-label={`${match.matchNo} 场现场分组`}
+                                value={match.groupName}
+                                disabled={!isEditable}
+                                onChange={(event) => patchState((current) => updateArrangementMatch(current, match.id, { groupName: event.target.value }))}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                aria-label={`${match.matchNo} 场剑道`}
+                                value={match.piste}
+                                disabled={!isEditable}
+                                onChange={(event) => patchState((current) => updateArrangementMatch(current, match.id, { piste: event.target.value }))}
+                              />
+                            </td>
+                            <td>{match.red.name} vs {match.blue.name}</td>
+                            <td>{statusLabel(match.status)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <EmptyState text="还没有编排结果，请先生成赛事场次。" />
+              )}
+            </section>
           </section>
         )}
 
         {activeView === "matches" && (
           <section className="match-groups">
+            <section className="panel match-import-panel">
+              <div className="result-toolbar">
+                <div>
+                  <h2>导入场次</h2>
+                  <p>支持 Excel / CSV。导入会替换现有全部场次，并清空赛事编排结果。</p>
+                </div>
+                <label className="file-button">
+                  <Upload size={18} />
+                  导入场次
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleImport(event.target.files?.[0] ?? null)} />
+                </label>
+              </div>
+              {importMessage && <p className="notice">{importMessage}</p>}
+            </section>
             {groupedMatches.map((group) => {
               const finishedCount = group.matches.filter((match) => match.status === "finished").length;
+              const isImportedGroup = group.matches.every((match) => !match.tournamentStage);
               return (
                 <section key={group.name} className="match-group">
                   <div className="match-group-header">
@@ -706,22 +864,41 @@ function App() {
                       <h2>{group.name}</h2>
                       <p>{group.matches.length} 场比赛 · 已结束 {finishedCount} 场</p>
                     </div>
+                    <button
+                      className="icon-button danger-icon"
+                      title={isImportedGroup ? `移除${group.name}` : "赛事编排分组请在编排页统一清空"}
+                      aria-label={isImportedGroup ? `移除${group.name}` : `${group.name}不可单独移除`}
+                      disabled={!isImportedGroup}
+                      onClick={() => removeMatchGroup(group)}
+                    >
+                      <Trash2 size={18} />
+                    </button>
                   </div>
                   <div className="match-group-grid">
                     {group.matches.map((match) => (
-                      <button
-                        key={match.id}
-                        className={`match-card ${match.id === selectedMatch?.id ? "selected" : ""}`}
-                        onClick={() => {
-                          patchState((current) => ({ ...current, selectedMatchId: match.id }));
-                          setActiveView("console");
-                        }}
-                      >
-                        <span>{match.groupName || "未分组"} · {match.piste}</span>
-                        <strong>第 {match.matchNo} 场</strong>
-                        <p>{match.red.name} vs {match.blue.name}</p>
-                        <small>{statusLabel(match.status)} · 胜方：{getWinnerLabel(match.winner, match)}</small>
-                      </button>
+                      <article key={match.id} className={`match-card ${match.id === selectedMatch?.id ? "selected" : ""}`}>
+                        <button
+                          className="match-card-main"
+                          onClick={() => {
+                            patchState((current) => ({ ...current, selectedMatchId: match.id }));
+                            setActiveView("console");
+                          }}
+                        >
+                          <span>{match.groupName || "未分组"} · {match.piste}</span>
+                          <strong>第 {match.matchNo} 场</strong>
+                          <p>{match.red.name} vs {match.blue.name}</p>
+                          <small>{statusLabel(match.status)} · 胜方：{getWinnerLabel(match.winner, match)}</small>
+                        </button>
+                        <button
+                          className="icon-button match-delete"
+                          title={match.tournamentStage ? "赛事编排场次请在编排页统一清空" : "移除场次"}
+                          aria-label={match.tournamentStage ? `第 ${match.matchNo} 场不可单独移除` : `移除第 ${match.matchNo} 场`}
+                          disabled={Boolean(match.tournamentStage)}
+                          onClick={() => removeMatch(match)}
+                        >
+                          <Trash2 size={17} />
+                        </button>
+                      </article>
                     ))}
                   </div>
                 </section>
@@ -1006,7 +1183,7 @@ function App() {
 
 function viewTitle(view: ViewKey) {
   const titles: Record<ViewKey, string> = {
-    import: "导入场次",
+    home: "赛事首页",
     players: "选手名单",
     tournament: "赛事编排",
     matches: "比赛场次",
@@ -1017,6 +1194,16 @@ function viewTitle(view: ViewKey) {
     results: "结果导出",
   };
   return titles[view];
+}
+
+function tournamentFormatLabel(format: TournamentState["event"]["formatConfig"]["format"]) {
+  const labels: Record<TournamentState["event"]["formatConfig"]["format"], string> = {
+    group_bracket: "小组循环 + 单败淘汰",
+    swiss_bracket: "瑞士轮 + 单败淘汰",
+    direct_bracket: "直接单败淘汰赛",
+    double_elimination: "双败淘汰赛",
+  };
+  return labels[format];
 }
 
 function statusLabel(status: Match["status"]) {
@@ -1060,6 +1247,14 @@ function bracketStageLabel(stage: TournamentState["event"]["bracketNodes"][numbe
     grand_final: "总决赛",
   };
   return labels[stage] ?? "淘汰赛";
+}
+
+function tournamentMatchStageLabel(match: Match) {
+  if (!match.tournamentStage) return "普通场次";
+  if (match.tournamentStage === "group") return "小组循环";
+  if (match.tournamentStage === "swiss") return `瑞士轮第 ${match.tournamentRound ?? "-"} 轮`;
+  if (match.tournamentStage === "playoff") return "附加赛";
+  return `${bracketStageLabel(match.tournamentStage)}第 ${match.tournamentRound ?? "-"} 轮`;
 }
 
 function isBracketStage(stage: Match["tournamentStage"]) {
@@ -1326,11 +1521,11 @@ function stopResultLabel(result: RuleSet["warningLevels"][number]["stopResult"])
   return labels[result];
 }
 
-function NumberField(props: { label: string; value: number; onChange: (value: number) => void }) {
+function NumberField(props: { label: string; value: number; min?: number; max?: number; onChange: (value: number) => void }) {
   return (
     <label className="field">
       <span>{props.label}</span>
-      <input type="number" min={0} value={props.value} onChange={(event) => props.onChange(Number(event.target.value))} />
+      <input type="number" min={props.min ?? 0} max={props.max} value={props.value} onChange={(event) => props.onChange(Number(event.target.value))} />
     </label>
   );
 }

@@ -40,9 +40,11 @@ describe("赛事编排验收", () => {
   });
 
   it("瑞士轮必须先锁定当前轮，且下一轮不会重复对阵", () => {
-    const event = createEvent("swiss_bracket", 8, { swissRounds: 2, swissAdvancers: 4 });
+    const event = createEvent("swiss_bracket", 8, { swissRounds: 2, swissAdvancers: 4, swissGroupCount: 2 });
     const firstRound = generateSwissFirstRound(event, defaultRuleSet, []);
     expect(firstRound.matches).toHaveLength(4);
+    expect(new Set(firstRound.matches.map((match) => match.groupName))).toEqual(new Set(["瑞士A组", "瑞士B组"]));
+    expect(firstRound.event.groupNames).toEqual(["瑞士轮"]);
     expect(generateNextSwissRound(firstRound.event, firstRound.matches, defaultRuleSet).matches).toHaveLength(0);
 
     const firstRoundMatches = finishPendingMatches(firstRound.matches);
@@ -51,6 +53,7 @@ describe("赛事编排验收", () => {
 
     const secondRound = generateNextSwissRound(lockedFirstRound, firstRoundMatches, defaultRuleSet);
     expect(secondRound.matches).toHaveLength(4);
+    expect(new Set(secondRound.matches.map((match) => match.groupName))).toEqual(new Set(["瑞士A组", "瑞士B组"]));
     const firstPairings = new Set(firstRoundMatches.map(pairingKey));
     secondRound.matches.forEach((match) => expect(firstPairings.has(pairingKey(match))).toBe(false));
 

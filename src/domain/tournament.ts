@@ -521,9 +521,11 @@ function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: R
   const pairings = roundNo === 1 ? createSeededSwissFirstRoundPairings(pairingPlayers) : createSwissPairings(pairingPlayers, matches, rankings, event.formatConfig.avoidClubInSwiss);
   if (!pairings) return { event: touchEvent(event), matches: [] };
 
+  const swissGroupCount = clampSwissGroupCount(event.formatConfig.swissGroupCount);
   const generatedMatches = pairings.map(([red, blue], index) => createSwissMatch({
     matchNo: `${matches.length + index + 1}`,
     roundNo,
+    groupName: swissVenueGroupName(index % swissGroupCount),
     red,
     blue,
     ruleSet,
@@ -547,11 +549,11 @@ function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: R
   };
 }
 
-function createSwissMatch(input: { matchNo: string; roundNo: number; red: TournamentPlayer; blue: TournamentPlayer; ruleSet: RuleSet }): Match {
-  const groupName = `瑞士轮第${input.roundNo}轮`;
+function createSwissMatch(input: { matchNo: string; roundNo: number; groupName: string; red: TournamentPlayer; blue: TournamentPlayer; ruleSet: RuleSet }): Match {
+  const roundLabel = `瑞士轮第${input.roundNo}轮`;
   const match = createEmptyMatch({
     matchNo: input.matchNo,
-    groupName,
+    groupName: input.groupName,
     piste: "未分配",
     redName: input.red.name,
     redClub: input.red.club,
@@ -565,8 +567,17 @@ function createSwissMatch(input: { matchNo: string; roundNo: number; red: Tourna
     tournamentRound: input.roundNo,
     redPlayerId: input.red.id,
     bluePlayerId: input.blue.id,
-    events: [createMatchEvent(match.id, "match_created", `${groupName}生成场次`)],
+    events: [createMatchEvent(match.id, "match_created", `${roundLabel}生成场次，分配至${input.groupName}`)],
   };
+}
+
+function clampSwissGroupCount(value: number) {
+  return Math.min(26, Math.max(1, Math.trunc(value || 1)));
+}
+
+function swissVenueGroupName(index: number) {
+  // 场地组只负责现场分流，不参与瑞士轮的全局排名和下一轮配对。
+  return `瑞士${String.fromCharCode(65 + index)}组`;
 }
 
 function createDirectEliminationRankings(players: TournamentPlayer[], groupName = DIRECT_BRACKET_GROUP_NAME): TournamentRanking[] {
