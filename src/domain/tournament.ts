@@ -1,5 +1,5 @@
 import { createEmptyMatch, createMatchEvent } from "./rules";
-import type { BracketNode, Match, RuleSet, TournamentEvent, TournamentPlayer, TournamentRanking } from "../types";
+import type { BracketNode, Match, RankingRuleKey, RuleSet, TournamentEvent, TournamentPlayer, TournamentRanking } from "../types";
 
 type GeneratedMatches = {
   event: TournamentEvent;
@@ -100,12 +100,12 @@ export function calculateRankings(event: TournamentEvent, matches: Match[], rule
     .forEach((player) => standings.set(player.id, createEmptyStanding(player)));
 
   matches
-    .filter((match) => match.tournamentStage === "group" && match.status === "finished")
-    .forEach((match) => applyMatchToStandings(standings, match, ruleSet));
+    .filter((match) => (match.tournamentStage === "group" || match.tournamentStage === "playoff") && match.status === "finished")
+    .forEach((match) => applyMatchToStandings(standings, match, ruleSet, event));
 
   const baseRankings = Array.from(standings.values());
   const rankedByGroup = event.groupNames.flatMap((groupName) =>
-    rankStandings(baseRankings.filter((standing) => standing.groupName === groupName))
+    rankStandings(baseRankings.filter((standing) => standing.groupName === groupName), event, matches)
   );
   const groupAdvanced = new Set(
     rankedByGroup
@@ -113,13 +113,14 @@ export function calculateRankings(event: TournamentEvent, matches: Match[], rule
       .map((ranking) => ranking.playerId)
   );
   const targetAdvancers = Math.max(groupAdvanced.size, event.formatConfig.totalAdvancers);
-  const globalRankings = rankStandings(baseRankings);
+  const globalRankings = rankStandings(baseRankings, event, matches);
   globalRankings.slice(0, targetAdvancers).forEach((ranking) => groupAdvanced.add(ranking.playerId));
+  const playoffPlayerIds = findPlayoffCandidates(rankedByGroup, globalRankings, targetAdvancers, event, matches);
 
   return rankedByGroup.map((ranking) => ({
     ...ranking,
     advanced: groupAdvanced.has(ranking.playerId),
-    needsPlayoff: false,
+    needsPlayoff: playoffPlayerIds.has(ranking.playerId),
   }));
 }
 
@@ -135,11 +136,60 @@ export function refreshTournamentRankings(event: TournamentEvent, matches: Match
   });
 }
 
+export function generatePlayoffMatches(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  if (matches.some((match) => match.tournamentStage === "playoff" && match.status !== "finished")) {
+    return { event: touchEvent(event), matches: [] };
+  }
+
+  const rankings = calculateRankings(event, matches, ruleSet);
+  const candidates = rankings.filter((ranking) => ranking.needsPlayoff);
+  const generatedMatches: Match[] = [];
+  let matchNo = matches.length + 1;
+  const candidatesByGroup = new Map<string, TournamentRanking[]>();
+
+  candidates.forEach((ranking) => {
+    candidatesByGroup.set(ranking.groupName, [...(candidatesByGroup.get(ranking.groupName) ?? []), ranking]);
+  });
+
+  candidatesByGroup.forEach((groupCandidates, groupName) => {
+    for (let redIndex = 0; redIndex < groupCandidates.length; redIndex += 1) {
+      for (let blueIndex = redIndex + 1; blueIndex < groupCandidates.length; blueIndex += 1) {
+        const red = findPlayer(event.players, groupCandidates[redIndex].playerId);
+        const blue = findPlayer(event.players, groupCandidates[blueIndex].playerId);
+        const match = createEmptyMatch({
+          matchNo: `${matchNo}`,
+          groupName: `${groupName}附加赛`,
+          piste: "未分配",
+          redName: red.name,
+          redClub: red.club,
+          blueName: blue.name,
+          blueClub: blue.club,
+          ruleSet,
+        });
+        generatedMatches.push({
+          ...match,
+          tournamentStage: "playoff",
+          tournamentRound: 1,
+          redPlayerId: red.id,
+          bluePlayerId: blue.id,
+          events: [createMatchEvent(match.id, "match_created", "晋级线同分生成附加赛")],
+        });
+        matchNo += 1;
+      }
+    }
+  });
+
+  return {
+    event: touchEvent({ ...event, rankings }),
+    matches: generatedMatches,
+  };
+}
+
 export function generateInitialBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
   const rankings = event.rankings.length ? event.rankings : calculateRankings(event, matches, ruleSet);
   const seeds = rankings
     .filter((ranking) => ranking.advanced)
-    .sort(compareRankings)
+    .sort((a, b) => compareRankingRecords(a, b, event, matches))
     .map((ranking, index) => ({ ...ranking, seedOrder: index + 1 }));
   const bracketSize = nextPowerOfTwo(seeds.length);
   const byeCount = bracketSize - seeds.length;
@@ -327,7 +377,7 @@ function createBracketMatch(input: {
   };
 }
 
-function applyMatchToStandings(standings: Map<string, PlayerStanding>, match: Match, ruleSet: RuleSet) {
+function applyMatchToStandings(standings: Map<string, PlayerStanding>, match: Match, ruleSet: RuleSet, event: TournamentEvent) {
   if (!match.redPlayerId || !match.bluePlayerId || !match.winner) return;
   const red = standings.get(match.redPlayerId);
   const blue = standings.get(match.bluePlayerId);
@@ -339,12 +389,14 @@ function applyMatchToStandings(standings: Map<string, PlayerStanding>, match: Ma
   blue.scoreAgainst += match.redScore;
   red.scoreDiff += match.redScore - match.blueScore;
   blue.scoreDiff += match.blueScore - match.redScore;
-  red.disciplinePenalty += calculateDisciplinePenalty(match, "red", ruleSet);
-  blue.disciplinePenalty += calculateDisciplinePenalty(match, "blue", ruleSet);
+  const redDisciplinePenalty = calculateDisciplinePenalty(match, "red", ruleSet, event);
+  const blueDisciplinePenalty = calculateDisciplinePenalty(match, "blue", ruleSet, event);
+  red.disciplinePenalty += redDisciplinePenalty;
+  blue.disciplinePenalty += blueDisciplinePenalty;
 
   if (match.winner === "draw") {
-    red.eventPoints += 1;
-    blue.eventPoints += 1;
+    red.eventPoints += getEventPoints(event, "draw", redDisciplinePenalty);
+    blue.eventPoints += getEventPoints(event, "draw", blueDisciplinePenalty);
     red.draws += 1;
     blue.draws += 1;
     return;
@@ -352,17 +404,26 @@ function applyMatchToStandings(standings: Map<string, PlayerStanding>, match: Ma
 
   const winner = match.winner === "red" ? red : blue;
   const loser = match.winner === "red" ? blue : red;
-  winner.eventPoints += 3;
+  const winnerPenalty = match.winner === "red" ? redDisciplinePenalty : blueDisciplinePenalty;
+  const loserPenalty = match.winner === "red" ? blueDisciplinePenalty : redDisciplinePenalty;
+  winner.eventPoints += getEventPoints(event, "win", winnerPenalty);
+  loser.eventPoints += getEventPoints(event, "loss", loserPenalty);
   winner.realWins += 1;
   loser.losses += 1;
 }
 
-function calculateDisciplinePenalty(match: Match, side: "red" | "blue", ruleSet: RuleSet) {
+function calculateDisciplinePenalty(match: Match, side: "red" | "blue", ruleSet: RuleSet, event: TournamentEvent) {
   const warnings = side === "red" ? match.redWarnings : match.blueWarnings;
   return Object.entries(warnings ?? {}).reduce((total, [warningId, count]) => {
     const warning = ruleSet.warningLevels.find((item) => item.id === warningId);
-    return total + Math.abs(warning?.scoreDelta ?? 0) * count;
+    const configuredDeduction = event.disciplinePointConfig.warningDeductions[warningId];
+    return total + (configuredDeduction ?? Math.abs(warning?.scoreDelta ?? 0)) * count;
   }, 0);
+}
+
+function getEventPoints(event: TournamentEvent, result: "win" | "draw" | "loss" | "doubleLoss", disciplinePenalty: number) {
+  const basePoints = event.eventPointConfig[result];
+  return basePoints - (event.disciplinePointConfig.applyToEventPoints ? disciplinePenalty : 0);
 }
 
 function syncBracketNodes(nodes: BracketNode[], matches: Match[]): BracketNode[] {
@@ -398,8 +459,8 @@ function createEmptyStanding(player: TournamentPlayer): PlayerStanding {
   };
 }
 
-function rankStandings(standings: PlayerStanding[]): TournamentRanking[] {
-  return [...standings].sort(compareStandings).map((standing, index) => ({
+function rankStandings(standings: PlayerStanding[], event: TournamentEvent, matches: Match[]): TournamentRanking[] {
+  return [...standings].sort((a, b) => compareStandingRecords(a, b, event, matches, true)).map((standing, index) => ({
     ...standing,
     rank: index + 1,
     advanced: false,
@@ -407,18 +468,82 @@ function rankStandings(standings: PlayerStanding[]): TournamentRanking[] {
   }));
 }
 
-function compareStandings(a: PlayerStanding, b: PlayerStanding) {
-  return (
-    b.eventPoints - a.eventPoints ||
-    b.realWins - a.realWins ||
-    b.scoreDiff - a.scoreDiff ||
-    a.disciplinePenalty - b.disciplinePenalty ||
-    a.name.localeCompare(b.name, "zh-Hans-CN")
-  );
+function compareStandingRecords(a: PlayerStanding, b: PlayerStanding, event: TournamentEvent, matches: Match[], includeFallback: boolean) {
+  for (const rule of getEnabledRankingRules(event)) {
+    const compared = compareByRankingRule(rule.key, a, b, matches);
+    if (compared !== 0) return compared;
+  }
+  return includeFallback ? a.name.localeCompare(b.name, "zh-Hans-CN") : 0;
 }
 
-function compareRankings(a: TournamentRanking, b: TournamentRanking) {
-  return compareStandings(a, b);
+function compareRankingRecords(a: TournamentRanking, b: TournamentRanking, event: TournamentEvent, matches: Match[]) {
+  return compareStandingRecords(a, b, event, matches, true);
+}
+
+function compareByRankingRule(ruleKey: RankingRuleKey, a: PlayerStanding, b: PlayerStanding, matches: Match[]) {
+  if (ruleKey === "eventPoints") return b.eventPoints - a.eventPoints;
+  if (ruleKey === "realWins") return b.realWins - a.realWins;
+  if (ruleKey === "scoreDiff") return b.scoreDiff - a.scoreDiff;
+  if (ruleKey === "disciplinePenalty") return a.disciplinePenalty - b.disciplinePenalty;
+  if (ruleKey === "headToHead") return compareHeadToHead(a, b, matches);
+  return 0;
+}
+
+function compareHeadToHead(a: PlayerStanding, b: PlayerStanding, matches: Match[]) {
+  const directMatches = matches.filter(
+    (match) =>
+      match.tournamentStage === "group" &&
+      match.status === "finished" &&
+      ((match.redPlayerId === a.playerId && match.bluePlayerId === b.playerId) ||
+        (match.redPlayerId === b.playerId && match.bluePlayerId === a.playerId))
+  );
+  if (directMatches.length !== 1) return 0;
+  const match = directMatches[0];
+  if (match.winner === "draw" || !match.winner) return 0;
+  const winnerPlayerId = match.winner === "red" ? match.redPlayerId : match.bluePlayerId;
+  if (winnerPlayerId === a.playerId) return -1;
+  if (winnerPlayerId === b.playerId) return 1;
+  return 0;
+}
+
+function getEnabledRankingRules(event: TournamentEvent) {
+  return event.rankingRules
+    .filter((rule) => rule.enabled && rule.key !== "playoff")
+    .sort((a, b) => a.priority - b.priority);
+}
+
+function findPlayoffCandidates(
+  rankedByGroup: TournamentRanking[],
+  globalRankings: TournamentRanking[],
+  targetAdvancers: number,
+  event: TournamentEvent,
+  matches: Match[]
+) {
+  const playerIds = new Set<string>();
+  if (!event.rankingRules.find((rule) => rule.key === "playoff")?.enabled) return playerIds;
+
+  event.groupNames.forEach((groupName) => {
+    const groupRankings = rankedByGroup.filter((ranking) => ranking.groupName === groupName);
+    addBoundaryTiePlayers(playerIds, groupRankings, event.formatConfig.groupAdvancers, event, matches);
+  });
+  addBoundaryTiePlayers(playerIds, globalRankings, targetAdvancers, event, matches);
+  return playerIds;
+}
+
+function addBoundaryTiePlayers(
+  playerIds: Set<string>,
+  rankings: TournamentRanking[],
+  cutoff: number,
+  event: TournamentEvent,
+  matches: Match[]
+) {
+  if (cutoff <= 0 || rankings.length <= cutoff) return;
+  const boundary = rankings[cutoff - 1];
+  const next = rankings[cutoff];
+  if (!boundary || !next || compareStandingRecords(boundary, next, event, matches, false) !== 0) return;
+  rankings
+    .filter((ranking) => compareStandingRecords(boundary, ranking, event, matches, false) === 0)
+    .forEach((ranking) => playerIds.add(ranking.playerId));
 }
 
 function comparePlayersBySeed(a: TournamentPlayer, b: TournamentPlayer) {

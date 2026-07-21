@@ -1,5 +1,5 @@
 import { defaultRuleSet, normalizeMatch, normalizeRuleSet } from "../domain/rules";
-import type { TournamentEvent, TournamentState } from "../types";
+import type { DisciplinePointConfig, EventPointConfig, RankingRuleConfig, RuleSet, TournamentEvent, TournamentState } from "../types";
 
 const DB_NAME = "heima-record-db";
 const DB_VERSION = 1;
@@ -44,6 +44,7 @@ export function normalizeState(state: TournamentState): TournamentState {
 }
 
 export function createDefaultTournamentEvent(): TournamentEvent {
+  const ruleSet = defaultRuleSet;
   return {
     players: [],
     stage: "setup",
@@ -53,6 +54,9 @@ export function createDefaultTournamentEvent(): TournamentEvent {
       totalAdvancers: 4,
       generateThirdPlaceMatch: true,
     },
+    eventPointConfig: createDefaultEventPointConfig(),
+    rankingRules: createDefaultRankingRules(),
+    disciplinePointConfig: createDefaultDisciplinePointConfig(ruleSet),
     groupNames: [],
     rankings: [],
     bracketNodes: [],
@@ -70,11 +74,58 @@ function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentE
       ...fallback.formatConfig,
       ...event?.formatConfig,
     },
+    eventPointConfig: {
+      ...fallback.eventPointConfig,
+      ...event?.eventPointConfig,
+    },
+    rankingRules: normalizeRankingRules(event?.rankingRules),
+    disciplinePointConfig: {
+      ...fallback.disciplinePointConfig,
+      ...event?.disciplinePointConfig,
+      warningDeductions: {
+        ...fallback.disciplinePointConfig.warningDeductions,
+        ...event?.disciplinePointConfig?.warningDeductions,
+      },
+    },
     groupNames: event?.groupNames ?? [],
     rankings: event?.rankings ?? [],
     bracketNodes: event?.bracketNodes ?? [],
     updatedAt: event?.updatedAt ?? new Date().toISOString(),
   };
+}
+
+export function createDefaultEventPointConfig(): EventPointConfig {
+  return {
+    win: 3,
+    draw: 1,
+    loss: 0,
+    doubleLoss: 0,
+  };
+}
+
+export function createDefaultRankingRules(): RankingRuleConfig[] {
+  return [
+    { key: "eventPoints", label: "赛事积分", enabled: true, priority: 1 },
+    { key: "realWins", label: "真实胜场", enabled: true, priority: 2 },
+    { key: "scoreDiff", label: "净胜分", enabled: true, priority: 3 },
+    { key: "disciplinePenalty", label: "纪律扣分", enabled: true, priority: 4 },
+    { key: "headToHead", label: "相互胜负", enabled: false, priority: 5 },
+    { key: "playoff", label: "附加赛", enabled: true, priority: 99 },
+  ];
+}
+
+function createDefaultDisciplinePointConfig(ruleSet: RuleSet): DisciplinePointConfig {
+  return {
+    applyToEventPoints: true,
+    warningDeductions: Object.fromEntries(ruleSet.warningLevels.map((warning) => [warning.id, Math.abs(warning.scoreDelta)])),
+  };
+}
+
+function normalizeRankingRules(rules?: RankingRuleConfig[]) {
+  const existingRules = new Map((rules ?? []).map((rule) => [rule.key, rule]));
+  return createDefaultRankingRules()
+    .map((rule) => ({ ...rule, ...existingRules.get(rule.key), label: rule.label }))
+    .sort((a, b) => a.priority - b.priority);
 }
 
 export async function loadState(): Promise<TournamentState> {

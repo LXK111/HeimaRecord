@@ -607,6 +607,77 @@ h1 {
   font-size: 20px;
 }
 
+.ranking-config {
+  display: grid;
+  gap: 14px;
+}
+
+.ranking-config > section {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e1d7c8;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.ranking-config h2 {
+  font-size: 18px;
+}
+
+.ranking-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ranking-rule-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 100px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #ede4d6;
+  border-radius: 6px;
+}
+
+.ranking-rule-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ranking-rule-row span {
+  color: #6d746f;
+}
+
+.inline-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.inline-actions button {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #e4ded4;
+  color: #16201c;
+}
+
+.inline-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.compact-toggle {
+  padding-top: 0;
+}
+
+.discipline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
 .bracket-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -810,7 +881,8 @@ th {
   }
 
   .adjudication-panel,
-  .adjudication-grid {
+  .adjudication-grid,
+  .ranking-rule-row {
     grid-template-columns: 1fr;
   }
 

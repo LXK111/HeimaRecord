@@ -8,9 +8,11 @@ export type MatchSide = "red" | "blue";
 
 export type PenaltyStopResult = "opponent_win" | "self_win" | "draw" | "manual";
 
-export type TournamentStageType = "group" | "bracket" | "third_place";
+export type TournamentStageType = "group" | "playoff" | "bracket" | "third_place";
 
 export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "bracket_ready" | "finished";
+
+export type RankingRuleKey = "eventPoints" | "realWins" | "scoreDiff" | "disciplinePenalty" | "headToHead" | "playoff";
 
 export type MatchEndReason =
   | "target_score"
@@ -169,6 +171,25 @@ export interface TournamentFormatConfig {
   generateThirdPlaceMatch: boolean;
 }
 
+export interface EventPointConfig {
+  win: number;
+  draw: number;
+  loss: number;
+  doubleLoss: number;
+}
+
+export interface RankingRuleConfig {
+  key: RankingRuleKey;
+  label: string;
+  enabled: boolean;
+  priority: number;
+}
+
+export interface DisciplinePointConfig {
+  applyToEventPoints: boolean;
+  warningDeductions: Record<string, number>;
+}
+
 export interface TournamentRanking {
   rank: number;
   playerId: string;
@@ -205,6 +226,9 @@ export interface TournamentEvent {
   players: TournamentPlayer[];
   stage: TournamentEventStage;
   formatConfig: TournamentFormatConfig;
+  eventPointConfig: EventPointConfig;
+  rankingRules: RankingRuleConfig[];
+  disciplinePointConfig: DisciplinePointConfig;
   groupNames: string[];
   rankings: TournamentRanking[];
   bracketNodes: BracketNode[];

@@ -34,6 +34,7 @@ import {
   calculateRankings,
   generateGroupStage,
   generateInitialBracket,
+  generatePlayoffMatches,
   parsePlayersText,
   refreshTournamentRankings,
   syncTournamentEvent,
@@ -281,6 +282,74 @@ function App() {
     }));
   }
 
+  function updateEventPointConfig(patch: Partial<TournamentState["event"]["eventPointConfig"]>) {
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        eventPointConfig: { ...current.event.eventPointConfig, ...patch },
+      },
+    }));
+  }
+
+  function updateDisciplineConfig(patch: Partial<TournamentState["event"]["disciplinePointConfig"]>) {
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        disciplinePointConfig: {
+          ...current.event.disciplinePointConfig,
+          ...patch,
+          warningDeductions: patch.warningDeductions ?? current.event.disciplinePointConfig.warningDeductions,
+        },
+      },
+    }));
+  }
+
+  function updateWarningDeduction(warningId: string, deduction: number) {
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        disciplinePointConfig: {
+          ...current.event.disciplinePointConfig,
+          warningDeductions: {
+            ...current.event.disciplinePointConfig.warningDeductions,
+            [warningId]: deduction,
+          },
+        },
+      },
+    }));
+  }
+
+  function toggleRankingRule(ruleKey: TournamentState["event"]["rankingRules"][number]["key"], enabled: boolean) {
+    patchState((current) => ({
+      ...current,
+      event: {
+        ...current.event,
+        rankingRules: current.event.rankingRules.map((rule) => (rule.key === ruleKey ? { ...rule, enabled } : rule)),
+      },
+    }));
+  }
+
+  function moveRankingRule(ruleKey: TournamentState["event"]["rankingRules"][number]["key"], direction: -1 | 1) {
+    patchState((current) => {
+      const rules = [...current.event.rankingRules].sort((a, b) => a.priority - b.priority);
+      const index = rules.findIndex((rule) => rule.key === ruleKey);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= rules.length) return current;
+      if (rules[index].key === "playoff" || rules[targetIndex].key === "playoff") return current;
+      [rules[index], rules[targetIndex]] = [rules[targetIndex], rules[index]];
+      return {
+        ...current,
+        event: {
+          ...current.event,
+          rankingRules: rules.map((rule, ruleIndex) => ({ ...rule, priority: rule.key === "playoff" ? 99 : ruleIndex + 1 })),
+        },
+      };
+    });
+  }
+
   function generateGroupMatches() {
     patchState((current) => {
       const generated = generateGroupStage(current.event, current.ruleSet);
@@ -302,6 +371,21 @@ function App() {
       event: refreshTournamentRankings(current.event, current.matches, current.ruleSet),
     }));
     setTournamentMessage("已刷新小组排名。");
+  }
+
+  function generatePlayoffs() {
+    const hasPendingPlayoff = state.matches.some((match) => match.tournamentStage === "playoff" && match.status !== "finished");
+    patchState((current) => {
+      const generated = generatePlayoffMatches(current.event, current.matches, current.ruleSet);
+      return {
+        ...current,
+        event: generated.event,
+        matches: [...current.matches, ...generated.matches],
+        selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+      };
+    });
+    setTournamentMessage(hasPendingPlayoff ? "未生成新附加赛，请先完成已有附加赛或刷新排名。" : "已根据晋级线同分生成附加赛。");
+    if (!hasPendingPlayoff) setActiveView("matches");
   }
 
   function generateBracket() {
@@ -585,15 +669,26 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>小组排名</h2>
-                <p>默认按赛事积分、真实胜场、净胜分、纪律扣分排序；完全同分时后续阶段生成附加赛入口。</p>
+                <p>排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。</p>
               </div>
-              <button className="primary-action" onClick={refreshRankings}>刷新排名</button>
+              <div className="stage-actions">
+                <button onClick={refreshRankings}>刷新排名</button>
+                <button onClick={generatePlayoffs} disabled={!liveRankings.some((ranking) => ranking.needsPlayoff)}>生成附加赛</button>
+              </div>
             </div>
+            <RankingConfigPanel
+              state={state}
+              onEventPointChange={updateEventPointConfig}
+              onDisciplineChange={updateDisciplineConfig}
+              onWarningDeductionChange={updateWarningDeduction}
+              onRuleToggle={toggleRankingRule}
+              onRuleMove={moveRankingRule}
+            />
             {syncedEvent.groupNames.map((groupName) => (
               <div key={groupName} className="ranking-section">
                 <h2>{groupName}</h2>
                 <DataTable
-                  headers={["组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级"]}
+                  headers={["组内名次", "选手", "积分", "胜", "平", "负", "净胜分", "纪律扣分", "晋级", "附加赛"]}
                   rows={liveRankings
                     .filter((ranking) => ranking.groupName === groupName)
                     .map((ranking) => [
@@ -606,6 +701,7 @@ function App() {
                       ranking.scoreDiff,
                       ranking.disciplinePenalty,
                       ranking.advanced ? "是" : "否",
+                      ranking.needsPlayoff ? "需要" : "-",
                     ])}
                   emptyText="暂无排名，请先生成小组赛并记录结果。"
                 />
@@ -881,6 +977,73 @@ function DataTable(props: { headers: string[]; rows: Array<Array<string | number
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function RankingConfigPanel(props: {
+  state: TournamentState;
+  onEventPointChange: (patch: Partial<TournamentState["event"]["eventPointConfig"]>) => void;
+  onDisciplineChange: (patch: Partial<TournamentState["event"]["disciplinePointConfig"]>) => void;
+  onWarningDeductionChange: (warningId: string, deduction: number) => void;
+  onRuleToggle: (ruleKey: TournamentState["event"]["rankingRules"][number]["key"], enabled: boolean) => void;
+  onRuleMove: (ruleKey: TournamentState["event"]["rankingRules"][number]["key"], direction: -1 | 1) => void;
+}) {
+  const sortedRules = [...props.state.event.rankingRules].sort((a, b) => a.priority - b.priority);
+  return (
+    <div className="ranking-config">
+      <section>
+        <h2>赛事积分</h2>
+        <div className="rules-grid">
+          <NumberField label="胜" value={props.state.event.eventPointConfig.win} onChange={(value) => props.onEventPointChange({ win: value })} />
+          <NumberField label="平" value={props.state.event.eventPointConfig.draw} onChange={(value) => props.onEventPointChange({ draw: value })} />
+          <NumberField label="负" value={props.state.event.eventPointConfig.loss} onChange={(value) => props.onEventPointChange({ loss: value })} />
+          <NumberField label="双负" value={props.state.event.eventPointConfig.doubleLoss} onChange={(value) => props.onEventPointChange({ doubleLoss: value })} />
+        </div>
+      </section>
+      <section>
+        <h2>排名规则</h2>
+        <div className="ranking-rule-list">
+          {sortedRules.map((rule, index) => (
+            <div key={rule.key} className="ranking-rule-row">
+              <label>
+                <input type="checkbox" checked={rule.enabled} onChange={(event) => props.onRuleToggle(rule.key, event.target.checked)} />
+                {rule.label}
+              </label>
+              <span>优先级 {rule.priority}</span>
+              <div className="inline-actions">
+                <button onClick={() => props.onRuleMove(rule.key, -1)} disabled={rule.key === "playoff" || index === 0}>上移</button>
+                <button onClick={() => props.onRuleMove(rule.key, 1)} disabled={rule.key === "playoff" || sortedRules[index + 1]?.key === "playoff"}>下移</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section>
+        <h2>纪律扣分</h2>
+        <label className="toggle-row compact-toggle">
+          <input
+            type="checkbox"
+            checked={props.state.event.disciplinePointConfig.applyToEventPoints}
+            onChange={(event) => props.onDisciplineChange({ applyToEventPoints: event.target.checked })}
+          />
+          计入赛事积分
+        </label>
+        <div className="discipline-grid">
+          {props.state.ruleSet.warningLevels.map((warning) => (
+            <label key={warning.id} className="field">
+              <span>{warning.label}</span>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={props.state.event.disciplinePointConfig.warningDeductions[warning.id] ?? Math.abs(warning.scoreDelta)}
+                onChange={(event) => props.onWarningDeductionChange(warning.id, Number(event.target.value))}
+              />
+            </label>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
