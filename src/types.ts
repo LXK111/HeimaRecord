@@ -8,11 +8,11 @@ export type MatchSide = "red" | "blue";
 
 export type PenaltyStopResult = "opponent_win" | "self_win" | "draw" | "manual";
 
-export type TournamentStageType = "group" | "playoff" | "swiss" | "bracket" | "third_place";
+export type TournamentStageType = "group" | "playoff" | "swiss" | "bracket" | "third_place" | "winner_bracket" | "loser_bracket" | "grand_final";
 
 export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | "swiss_ready" | "swiss_finished" | "bracket_ready" | "finished";
 
-export type TournamentFormat = "group_bracket" | "swiss_bracket" | "direct_bracket";
+export type TournamentFormat = "group_bracket" | "swiss_bracket" | "direct_bracket" | "double_elimination";
 
 export type SwissRoundStatus = "published" | "locked";
 

@@ -33,6 +33,7 @@ import {
   advanceBracket,
   calculateRankings,
   generateDirectEliminationBracket,
+  generateDoubleEliminationBracket,
   generateNextSwissRound,
   generateGroupStage,
   generateInitialBracket,
@@ -89,6 +90,8 @@ function App() {
   const isGroupFormat = state.event.formatConfig.format === "group_bracket";
   const isSwissFormat = state.event.formatConfig.format === "swiss_bracket";
   const isDirectBracketFormat = state.event.formatConfig.format === "direct_bracket";
+  const isDoubleEliminationFormat = state.event.formatConfig.format === "double_elimination";
+  const isNoPreliminaryFormat = isDirectBracketFormat || isDoubleEliminationFormat;
 
   useEffect(() => {
     loadState()
@@ -450,6 +453,16 @@ function App() {
           selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
         };
       }
+      if (current.event.formatConfig.format === "double_elimination") {
+        const nonTournamentMatches = current.matches.filter((match) => !match.tournamentStage);
+        const generated = generateDoubleEliminationBracket(current.event, nonTournamentMatches, current.ruleSet);
+        return {
+          ...current,
+          event: generated.event,
+          matches: [...nonTournamentMatches, ...generated.matches],
+          selectedMatchId: generated.matches[0]?.id ?? current.selectedMatchId,
+        };
+      }
       const rankedEvent = refreshTournamentRankings(current.event, current.matches, current.ruleSet);
       const generated = generateInitialBracket(rankedEvent, current.matches, current.ruleSet);
       return {
@@ -460,7 +473,7 @@ function App() {
       };
     });
     setActiveView("bracket");
-    setTournamentMessage(isDirectBracketFormat ? "已按选手种子生成直接单败淘汰签表。" : "已生成淘汰赛签表。");
+    setTournamentMessage(isDoubleEliminationFormat ? "已按选手种子生成双败淘汰赛胜者组首轮。" : isDirectBracketFormat ? "已按选手种子生成直接单败淘汰签表。" : "已生成淘汰赛签表。");
   }
 
   function advanceBracketRound() {
@@ -575,7 +588,7 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>赛事编排</h2>
-                <p>支持小组循环、瑞士轮或直接单败淘汰，统一复用比赛控制台记录结果。</p>
+                <p>支持小组循环、瑞士轮、直接单败或双败淘汰，统一复用比赛控制台记录结果。</p>
               </div>
               <span className="stage-badge">{tournamentStageLabel(syncedEvent.stage)}</span>
             </div>
@@ -589,6 +602,7 @@ function App() {
                   <option value="group_bracket">小组循环 + 单败淘汰</option>
                   <option value="swiss_bracket">瑞士轮 + 单败淘汰</option>
                   <option value="direct_bracket">直接单败淘汰赛</option>
+                  <option value="double_elimination">双败淘汰赛</option>
                 </select>
               </label>
               {isGroupFormat && (
@@ -643,16 +657,16 @@ function App() {
                   </button>
                 </>
               )}
-              {!isDirectBracketFormat && <button onClick={refreshRankings}>{isSwissFormat ? "刷新瑞士轮排名" : "刷新小组排名"}</button>}
+              {!isNoPreliminaryFormat && <button onClick={refreshRankings}>{isSwissFormat ? "刷新瑞士轮排名" : "刷新小组排名"}</button>}
               <button
                 onClick={generateBracket}
                 disabled={
-                  isDirectBracketFormat
+                  isNoPreliminaryFormat
                     ? state.event.players.filter((player) => player.status === "active").length < 2
                     : liveRankings.filter((ranking) => ranking.advanced).length < 2 || (isSwissFormat && syncedEvent.stage !== "swiss_finished")
                 }
               >
-                {isDirectBracketFormat ? "生成直接淘汰赛" : "生成淘汰赛"}
+                {isDoubleEliminationFormat ? "生成双败淘汰赛" : isDirectBracketFormat ? "生成直接淘汰赛" : "生成淘汰赛"}
               </button>
               <button onClick={advanceBracketRound}>推进淘汰赛</button>
             </div>
@@ -674,8 +688,8 @@ function App() {
             {tournamentMessage && <p className="notice">{tournamentMessage}</p>}
             <div className="metric-grid">
               <div><strong>{state.event.players.length}</strong><span>选手</span></div>
-              <div><strong>{isDirectBracketFormat ? state.event.players.filter((player) => player.status === "active").length : isSwissFormat ? syncedEvent.swissRounds.length : syncedEvent.groupNames.length}</strong><span>{isDirectBracketFormat ? "参赛选手" : isSwissFormat ? "瑞士轮" : "小组"}</span></div>
-              <div><strong>{state.matches.filter((match) => match.tournamentStage === (isDirectBracketFormat ? "bracket" : isSwissFormat ? "swiss" : "group")).length}</strong><span>{isDirectBracketFormat ? "淘汰场次" : isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
+              <div><strong>{isNoPreliminaryFormat ? state.event.players.filter((player) => player.status === "active").length : isSwissFormat ? syncedEvent.swissRounds.length : syncedEvent.groupNames.length}</strong><span>{isNoPreliminaryFormat ? "参赛选手" : isSwissFormat ? "瑞士轮" : "小组"}</span></div>
+              <div><strong>{state.matches.filter((match) => isNoPreliminaryFormat ? isBracketStage(match.tournamentStage) : match.tournamentStage === (isSwissFormat ? "swiss" : "group")).length}</strong><span>{isNoPreliminaryFormat ? "淘汰场次" : isSwissFormat ? "瑞士轮场次" : "小组赛"}</span></div>
               <div><strong>{syncedEvent.bracketNodes.length}</strong><span>签表节点</span></div>
             </div>
           </section>
@@ -801,18 +815,18 @@ function App() {
           <section className="panel tournament-panel">
             <div className="result-toolbar">
               <div>
-                <h2>{isDirectBracketFormat ? "预赛排名" : isSwissFormat ? "瑞士轮排名" : "小组排名"}</h2>
-                <p>{isDirectBracketFormat ? "直接单败淘汰赛不经过预赛排名，签表按选手种子生成。" : "排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。"}</p>
+                <h2>{isNoPreliminaryFormat ? "预赛排名" : isSwissFormat ? "瑞士轮排名" : "小组排名"}</h2>
+                <p>{isNoPreliminaryFormat ? "当前淘汰赛制不经过预赛排名，签表按选手种子生成。" : "排名按下方规则顺序计算；晋级线完全同分时可生成附加赛。"}</p>
               </div>
-              {!isDirectBracketFormat && (
+              {!isNoPreliminaryFormat && (
                 <div className="stage-actions">
                   <button onClick={refreshRankings}>刷新排名</button>
                   <button onClick={generatePlayoffs} disabled={!liveRankings.some((ranking) => ranking.needsPlayoff)}>生成附加赛</button>
                 </div>
               )}
             </div>
-            {isDirectBracketFormat ? (
-              <EmptyState text="直接单败淘汰赛不需要预赛排名，请在编排页生成签表。" />
+            {isNoPreliminaryFormat ? (
+              <EmptyState text="当前淘汰赛制不需要预赛排名，请在编排页生成签表。" />
             ) : (
               <>
                 <RankingConfigPanel
@@ -857,7 +871,7 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>淘汰签表</h2>
-                <p>签表按排名种子生成，非 2 的幂人数会给高种子轮空；半决赛后生成季军赛。</p>
+                <p>{isDoubleEliminationFormat ? "双败按胜者组、败者组和总决赛推进；选手第二负后淘汰。" : "签表按排名种子生成，非 2 的幂人数会给高种子轮空；半决赛后生成季军赛。"}</p>
               </div>
               <button className="primary-action" onClick={advanceBracketRound}>推进淘汰赛</button>
             </div>
@@ -866,7 +880,7 @@ function App() {
                 const match = node.matchId ? state.matches.find((item) => item.id === node.matchId) : null;
                 return (
                   <div key={node.id} className="bracket-node">
-                    <span>{node.stage === "third_place" ? "季军赛" : `第 ${node.roundNo} 轮`}</span>
+                    <span>{bracketStageLabel(node.stage)} · 第 {node.roundNo} 轮</span>
                     <strong>{node.label}</strong>
                     <p>{match ? `${match.red.name} vs ${match.blue.name}` : "轮空晋级"}</p>
                     <small>{bracketStatusLabel(node.status)}{match?.winner ? ` · 胜方：${getWinnerLabel(match.winner, match)}` : ""}</small>
@@ -1034,6 +1048,21 @@ function bracketStatusLabel(status: TournamentState["event"]["bracketNodes"][num
     finished: "已完成",
   };
   return labels[status];
+}
+
+function bracketStageLabel(stage: TournamentState["event"]["bracketNodes"][number]["stage"]) {
+  const labels: Partial<Record<TournamentState["event"]["bracketNodes"][number]["stage"], string>> = {
+    bracket: "单败淘汰",
+    third_place: "季军赛",
+    winner_bracket: "胜者组",
+    loser_bracket: "败者组",
+    grand_final: "总决赛",
+  };
+  return labels[stage] ?? "淘汰赛";
+}
+
+function isBracketStage(stage: Match["tournamentStage"]) {
+  return stage === "bracket" || stage === "third_place" || stage === "winner_bracket" || stage === "loser_bracket" || stage === "grand_final";
 }
 
 function groupMatchesByName(matches: Match[]): MatchGroup[] {

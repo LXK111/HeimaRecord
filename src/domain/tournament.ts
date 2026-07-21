@@ -10,6 +10,7 @@ type PlayerStanding = Omit<TournamentRanking, "rank" | "advanced" | "needsPlayof
 
 const SWISS_GROUP_NAME = "瑞士轮";
 const DIRECT_BRACKET_GROUP_NAME = "直接淘汰";
+const DOUBLE_ELIMINATION_GROUP_NAME = "双败淘汰";
 
 export function createTournamentPlayer(input: { name: string; club?: string; seed?: number | null }): TournamentPlayer {
   return {
@@ -260,6 +261,43 @@ export function generateDirectEliminationBracket(event: TournamentEvent, matches
   );
 }
 
+export function generateDoubleEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: DOUBLE_ELIMINATION_GROUP_NAME } : { ...player, groupName: "" }));
+  const rankings = createDirectEliminationRankings(players, DOUBLE_ELIMINATION_GROUP_NAME);
+  if (rankings.length < 2) return { event: touchEvent(event), matches: [] };
+  const generatedMatches: Match[] = [];
+  const nodes: BracketNode[] = [];
+  const seeds = rankings.map((ranking, index) => ({ playerId: ranking.playerId, seedOrder: index + 1, name: ranking.name }));
+  const bracketSize = nextPowerOfTwo(seeds.length);
+  const byeCount = bracketSize - seeds.length;
+  const byes = seeds.slice(0, byeCount);
+  const playable = seeds.slice(byeCount);
+
+  byes.forEach((seed) => {
+    nodes.push(createByeNode({
+      label: `胜者组第1轮轮空：${seed.name}`,
+      roundNo: 1,
+      playerId: seed.playerId,
+      seedOrder: seed.seedOrder,
+      stage: "winner_bracket",
+    }));
+  });
+  generatedMatches.push(...createPairedBracketMatches(event, playable, matches.length, 1, "胜者组第1轮", ruleSet, "winner_bracket", nodes));
+
+  return {
+    event: touchEvent({
+      ...event,
+      players,
+      groupNames: [DOUBLE_ELIMINATION_GROUP_NAME],
+      rankings,
+      swissRounds: [],
+      bracketNodes: nodes,
+      stage: "bracket_ready",
+    }),
+    matches: generatedMatches,
+  };
+}
+
 export function generateInitialBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
   const rankings = event.rankings.length ? event.rankings : calculateRankings(event, matches, ruleSet);
   const seeds = rankings
@@ -329,6 +367,9 @@ export function generateInitialBracket(event: TournamentEvent, matches: Match[],
 }
 
 export function advanceBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  if (event.formatConfig.format === "double_elimination") {
+    return advanceDoubleEliminationBracket(event, matches, ruleSet);
+  }
   const syncedNodes = syncBracketNodes(event.bracketNodes, matches);
   const maxRound = Math.max(0, ...syncedNodes.map((node) => node.roundNo));
   const currentRoundNodes = syncedNodes.filter((node) => node.roundNo === maxRound);
@@ -373,11 +414,92 @@ export function syncTournamentEvent(event: TournamentEvent, matches: Match[]): T
   const bracketNodes = syncBracketNodes(event.bracketNodes, matches);
   const hasReadyBracketMatch = bracketNodes.some((node) => node.status === "ready");
   const allBracketDone = bracketNodes.length > 0 && !hasReadyBracketMatch && bracketNodes.some((node) => node.label === "决赛");
+  const allDoubleEliminationDone = bracketNodes.some((node) => node.stage === "grand_final" && node.status === "finished");
   return touchEvent({
     ...event,
     bracketNodes,
-    stage: allBracketDone ? "finished" : event.stage,
+    stage: allBracketDone || allDoubleEliminationDone ? "finished" : event.stage,
   });
+}
+
+function advanceDoubleEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+  const syncedNodes = syncBracketNodes(event.bracketNodes, matches);
+  if (!syncedNodes.length || syncedNodes.some((node) => node.status === "ready")) {
+    return { event: touchEvent({ ...event, bracketNodes: syncedNodes }), matches: [] };
+  }
+  if (syncedNodes.some((node) => node.stage === "grand_final" && node.status === "finished")) {
+    return { event: touchEvent({ ...event, stage: "finished", bracketNodes: syncedNodes }), matches: [] };
+  }
+
+  const losses = calculateDoubleEliminationLosses(syncedNodes);
+  const activeSeeds = createDirectEliminationRankings(event.players, DOUBLE_ELIMINATION_GROUP_NAME)
+    .map((ranking) => ({ playerId: ranking.playerId, seedOrder: ranking.rank }))
+    .filter((seed) => (losses.get(seed.playerId) ?? 0) < 2);
+  const undefeatedSeeds = activeSeeds.filter((seed) => (losses.get(seed.playerId) ?? 0) === 0);
+  const oneLossSeeds = activeSeeds.filter((seed) => (losses.get(seed.playerId) ?? 0) === 1);
+  const nextRoundNo = Math.max(0, ...syncedNodes.map((node) => node.roundNo)) + 1;
+  const generatedMatches: Match[] = [];
+  const nextNodes: BracketNode[] = [];
+
+  if (undefeatedSeeds.length === 1 && oneLossSeeds.length === 1) {
+    generatedMatches.push(...createPairedBracketMatches(event, [undefeatedSeeds[0], oneLossSeeds[0]], matches.length, nextRoundNo, "总决赛", ruleSet, "grand_final", nextNodes));
+    return { event: touchEvent({ ...event, bracketNodes: [...syncedNodes, ...nextNodes] }), matches: generatedMatches };
+  }
+
+  if (undefeatedSeeds.length >= 2) {
+    generatedMatches.push(...createDoubleEliminationWave(event, undefeatedSeeds, matches.length + generatedMatches.length, nextRoundNo, "胜者组", "winner_bracket", ruleSet, nextNodes));
+  }
+  if (oneLossSeeds.length >= 2) {
+    generatedMatches.push(...createDoubleEliminationWave(event, oneLossSeeds, matches.length + generatedMatches.length, nextRoundNo, "败者组", "loser_bracket", ruleSet, nextNodes));
+  } else if (undefeatedSeeds.length === 1 && oneLossSeeds.length === 0) {
+    return { event: touchEvent({ ...event, stage: "finished", bracketNodes: syncedNodes }), matches: [] };
+  }
+
+  return {
+    event: touchEvent({
+      ...event,
+      bracketNodes: [...syncedNodes, ...nextNodes],
+    }),
+    matches: generatedMatches,
+  };
+}
+
+function createDoubleEliminationWave(
+  event: TournamentEvent,
+  seeds: Array<{ playerId: string; seedOrder: number }>,
+  matchOffset: number,
+  roundNo: number,
+  labelPrefix: string,
+  stage: "winner_bracket" | "loser_bracket",
+  ruleSet: RuleSet,
+  nodes: BracketNode[]
+) {
+  const orderedSeeds = [...seeds].sort((a, b) => a.seedOrder - b.seedOrder);
+  const byeCount = orderedSeeds.length % 2;
+  const byes = byeCount ? orderedSeeds.slice(0, 1) : [];
+  const playable = byeCount ? orderedSeeds.slice(1) : orderedSeeds;
+  byes.forEach((seed) => {
+    const player = findPlayer(event.players, seed.playerId);
+    nodes.push(createByeNode({
+      label: `${labelPrefix}第${roundNo}轮轮空：${player.name}`,
+      roundNo,
+      playerId: seed.playerId,
+      seedOrder: seed.seedOrder,
+      stage,
+    }));
+  });
+  return createPairedBracketMatches(event, playable, matchOffset, roundNo, `${labelPrefix}第${roundNo}轮`, ruleSet, stage, nodes);
+}
+
+function calculateDoubleEliminationLosses(nodes: BracketNode[]) {
+  const losses = new Map<string, number>();
+  nodes
+    .filter((node) => node.status === "finished" && node.loserPlayerId)
+    .forEach((node) => {
+      const loserPlayerId = node.loserPlayerId as string;
+      losses.set(loserPlayerId, (losses.get(loserPlayerId) ?? 0) + 1);
+    });
+  return losses;
 }
 
 export function getCurrentSwissRound(event: TournamentEvent): SwissRound | null {
@@ -447,7 +569,7 @@ function createSwissMatch(input: { matchNo: string; roundNo: number; red: Tourna
   };
 }
 
-function createDirectEliminationRankings(players: TournamentPlayer[]): TournamentRanking[] {
+function createDirectEliminationRankings(players: TournamentPlayer[], groupName = DIRECT_BRACKET_GROUP_NAME): TournamentRanking[] {
   // 直接单败没有预赛积分，签表种子只来自选手名单的 seed 和姓名兜底排序。
   return players
     .filter((player) => player.status === "active")
@@ -457,7 +579,7 @@ function createDirectEliminationRankings(players: TournamentPlayer[]): Tournamen
       playerId: player.id,
       name: player.name,
       club: player.club,
-      groupName: DIRECT_BRACKET_GROUP_NAME,
+      groupName,
       eventPoints: 0,
       realWins: 0,
       draws: 0,
@@ -548,7 +670,7 @@ function createPairedBracketMatches(
   roundNo: number,
   label: string,
   ruleSet: RuleSet,
-  stage: "bracket" | "third_place",
+  stage: "bracket" | "third_place" | "winner_bracket" | "loser_bracket" | "grand_final",
   nodes: BracketNode[]
 ): Match[] {
   const orderedSeeds = [...seeds].sort((a, b) => a.seedOrder - b.seedOrder);
@@ -584,6 +706,28 @@ function createPairedBracketMatches(
   return generatedMatches;
 }
 
+function createByeNode(input: {
+  label: string;
+  roundNo: number;
+  playerId: string;
+  seedOrder: number;
+  stage: "bracket" | "winner_bracket" | "loser_bracket";
+}): BracketNode {
+  return {
+    id: crypto.randomUUID(),
+    roundNo: input.roundNo,
+    label: input.label,
+    matchId: null,
+    redPlayerId: input.playerId,
+    bluePlayerId: null,
+    winnerPlayerId: input.playerId,
+    loserPlayerId: null,
+    seedOrder: input.seedOrder,
+    stage: input.stage,
+    status: "bye",
+  };
+}
+
 function createBracketMatch(input: {
   matchNo: string;
   roundNo: number;
@@ -591,7 +735,7 @@ function createBracketMatch(input: {
   red: TournamentPlayer;
   blue: TournamentPlayer;
   ruleSet: RuleSet;
-  stage?: "bracket" | "third_place";
+  stage?: "bracket" | "third_place" | "winner_bracket" | "loser_bracket" | "grand_final";
 }): Match {
   const match = createEmptyMatch({
     matchNo: input.matchNo,
