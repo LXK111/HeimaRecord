@@ -13,6 +13,8 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { FileDropZone } from "./components/FileDropZone";
+import { FileImportControl } from "./components/FileImportControl";
 import {
   adjustFinishedScore,
   adjustFinishedWinner,
@@ -623,17 +625,25 @@ function App() {
         )}
 
         {activeView === "players" && (
-          <section className="panel tournament-panel">
+          <FileDropZone
+            accept=".xlsx,.xls,.csv"
+            className="panel tournament-panel"
+            dropLabel="松开导入选手名单"
+            onFile={handlePlayerImport}
+            onReject={setPlayerMessage}
+          >
             <div className="result-toolbar">
               <div>
                 <h2>选手名单</h2>
                 <p>支持粘贴录入，也支持导入 Excel / CSV。每行格式：姓名，单位，种子序号。</p>
               </div>
-              <label className="file-button">
-                <FolderUp size={18} />
-                导入选手
-                <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handlePlayerImport(event.target.files?.[0] ?? null)} />
-              </label>
+              <FileImportControl
+                accept=".xlsx,.xls,.csv"
+                icon={<FolderUp size={18} />}
+                label="导入选手"
+                onFile={handlePlayerImport}
+                onReject={setPlayerMessage}
+              />
             </div>
             <div className="player-input-grid">
               <label className="field">
@@ -656,7 +666,7 @@ function App() {
               ])}
               emptyText="还没有选手，请先导入或批量录入。"
             />
-          </section>
+          </FileDropZone>
         )}
 
         {activeView === "tournament" && (
@@ -860,18 +870,26 @@ function App() {
         )}
 
         {activeView === "matches" && (
-          <section className="match-groups">
+          <FileDropZone
+            accept=".xlsx,.xls,.csv"
+            className="match-groups"
+            dropLabel="松开导入比赛场次"
+            onFile={handleImport}
+            onReject={setImportMessage}
+          >
             <section className="panel match-import-panel">
               <div className="result-toolbar">
                 <div>
                   <h2>导入场次</h2>
                   <p>支持 Excel / CSV。导入会替换现有全部场次，并清空赛事编排结果。</p>
                 </div>
-                <label className="file-button">
-                  <Upload size={18} />
-                  导入场次
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleImport(event.target.files?.[0] ?? null)} />
-                </label>
+                <FileImportControl
+                  accept=".xlsx,.xls,.csv"
+                  icon={<Upload size={18} />}
+                  label="导入场次"
+                  onFile={handleImport}
+                  onReject={setImportMessage}
+                />
               </div>
               {importMessage && <p className="notice">{importMessage}</p>}
             </section>
@@ -926,7 +944,7 @@ function App() {
               );
             })}
             {state.matches.length === 0 && <EmptyState text="还没有场次，请先导入 Excel 或 CSV。" />}
-          </section>
+          </FileDropZone>
         )}
 
         {activeView === "console" && (
@@ -1091,18 +1109,26 @@ function App() {
         )}
 
         {activeView === "rules" && (
-          <section className="panel rules-panel">
+          <FileDropZone
+            accept=".xlsx,.xls,.csv"
+            className="panel rules-panel"
+            dropLabel="松开导入比赛规则"
+            onFile={handleRuleImport}
+            onReject={setRuleMessage}
+          >
             <div className="result-toolbar">
               <div>
                 <h2>规则文件</h2>
                 <p>支持 XLSX 多工作表，也支持单个 CSV 规则表。</p>
               </div>
               <div className="result-actions">
-                <label className="file-button">
-                  <FolderUp size={18} />
-                  导入规则
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleRuleImport(event.target.files?.[0] ?? null)} />
-                </label>
+                <FileImportControl
+                  accept=".xlsx,.xls,.csv"
+                  icon={<FolderUp size={18} />}
+                  label="导入规则"
+                  onFile={handleRuleImport}
+                  onReject={setRuleMessage}
+                />
                 <button onClick={() => exportRuleSetToExcel(state.ruleSet)}><FileSpreadsheet size={18} />导出规则 XLSX</button>
               </div>
             </div>
@@ -1138,11 +1164,17 @@ function App() {
               </label>
             </div>
             <RuleSummary ruleSet={state.ruleSet} />
-          </section>
+          </FileDropZone>
         )}
 
         {activeView === "results" && (
-          <section className="panel results-panel">
+          <FileDropZone
+            accept=".json,application/json"
+            className="panel results-panel"
+            dropLabel="松开导入完整备份"
+            onFile={handleBackupImport}
+            onReject={setBackupMessage}
+          >
             <div className="result-toolbar">
               <div>
                 <h2>成绩导出</h2>
@@ -1161,11 +1193,13 @@ function App() {
               </div>
               <div className="result-actions">
                 <button onClick={() => exportStateBackup(state)}><Download size={18} />导出备份 JSON</button>
-                <label className="file-button">
-                  <FolderUp size={18} />
-                  导入备份 JSON
-                  <input type="file" accept=".json,application/json" onChange={(event) => handleBackupImport(event.target.files?.[0] ?? null)} />
-                </label>
+                <FileImportControl
+                  accept=".json,application/json"
+                  icon={<FolderUp size={18} />}
+                  label="导入备份 JSON"
+                  onFile={handleBackupImport}
+                  onReject={setBackupMessage}
+                />
               </div>
             </div>
             {backupMessage && <p className="notice">{backupMessage}</p>}
@@ -1195,7 +1229,7 @@ function App() {
                 </tbody>
               </table>
             </div>
-          </section>
+          </FileDropZone>
         )}
       </section>
     </main>

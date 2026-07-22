@@ -4,12 +4,12 @@
     {
       "source": "docs/使用说明.md",
       "pdf": "使用说明.pdf",
-      "sha256": "c7ebef4ca2157c9c63af0e7a218952e7ff71b0510fae0427bcc503ac8543ebb4"
+      "sha256": "022cd5ecefd911a6ee9f4a6920930297cd604facc3b2a30db920d8ffe338354c"
     },
     {
       "source": "docs/final_document/赛事现场验收与交付说明.md",
       "pdf": "赛事验收清单.pdf",
-      "sha256": "c6d1b1d5c2020adcb6175b7d46b365623f65e841009189436d7420ef3c969e60"
+      "sha256": "e378b5b8d434bdf89bd6b93964f36089dddd1571ae3ab11f0cce9d34542f7d67"
     }
   ]
 }
