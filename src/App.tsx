@@ -36,6 +36,7 @@ import {
 import {
   advanceBracket,
   calculateRankings,
+  countGroupClubConflicts,
   generateDirectEliminationBracket,
   generateDoubleEliminationBracket,
   generateNextSwissRound,
@@ -63,7 +64,7 @@ import {
   updateArrangementMatch,
 } from "./domain/tournamentState";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
-import { exportGroupingResultsToExcel, exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
+import { exportArrangementToExcel, exportGroupingResultsToExcel, exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
 import { parseMatchFile } from "./services/importer";
 import { parsePlayerFile } from "./services/playerImporter";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
@@ -410,8 +411,9 @@ function App() {
   }
 
   function generateGroupMatches() {
+    const generated = generateGroupStage(state.event, state.ruleSet);
+    const conflictCount = countGroupClubConflicts(generated.event.players);
     patchState((current) => {
-      const generated = generateGroupStage(current.event, current.ruleSet);
       const nonTournamentMatches = current.matches.filter((match) => !match.tournamentStage);
       return {
         ...current,
@@ -421,7 +423,11 @@ function App() {
       };
     });
     setActiveView("matches");
-    setTournamentMessage("已生成小组循环赛。");
+    setTournamentMessage(
+      state.event.formatConfig.avoidClubInGroups && conflictCount > 0
+        ? `已生成小组循环赛；受人数和单位分布限制，仍有 ${conflictCount} 组同单位相遇关系。`
+        : "已生成小组循环赛。"
+    );
   }
 
   function generateSwissOpeningRound() {
@@ -518,7 +524,8 @@ function App() {
       };
     });
     setActiveView("bracket");
-    setTournamentMessage(isDoubleEliminationFormat ? "已按选手种子生成双败淘汰赛胜者组首轮。" : isDirectBracketFormat ? "已按选手种子生成直接单败淘汰签表。" : "已生成淘汰赛签表。");
+    const drawMode = state.event.formatConfig.useSeeding ? "按种子" : "随机抽签";
+    setTournamentMessage(isDoubleEliminationFormat ? `已${drawMode}生成双败淘汰赛胜者组首轮。` : isDirectBracketFormat ? `已${drawMode}生成直接单败淘汰签表。` : "已生成淘汰赛签表。");
   }
 
   function advanceBracketRound() {
@@ -691,33 +698,40 @@ function App() {
                   <option value="double_elimination">双败淘汰赛</option>
                 </select>
               </label>
+              <NumberField
+                label="场地数量"
+                value={state.event.formatConfig.pisteCount}
+                min={1}
+                max={26}
+                onChange={(value) => updateTournamentConfig({ pisteCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })}
+              />
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={state.event.formatConfig.useSeeding}
+                  onChange={(event) => updateTournamentConfig({ useSeeding: event.target.checked })}
+                />
+                采用种子编排
+              </label>
               {isGroupFormat && (
                 <>
                   <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
                   <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
                   <NumberField label="总晋级人数" value={state.event.formatConfig.totalAdvancers} onChange={(value) => updateTournamentConfig({ totalAdvancers: value })} />
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={state.event.formatConfig.avoidClubInGroups}
+                      onChange={(event) => updateTournamentConfig({ avoidClubInGroups: event.target.checked })}
+                    />
+                    小组赛尽量避开同单位
+                  </label>
                 </>
               )}
               {isSwissFormat && (
                 <>
                   <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} min={1} onChange={(value) => updateTournamentConfig({ swissRounds: value })} />
                   <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} min={2} onChange={(value) => updateTournamentConfig({ swissAdvancers: value })} />
-                  <NumberField
-                    label="现场场地组数"
-                    value={state.event.formatConfig.swissGroupCount}
-                    min={1}
-                    max={26}
-                    onChange={(value) => updateTournamentConfig({ swissGroupCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })}
-                  />
-                  <label className="toggle-row" title={syncedEvent.swissRounds.length > 0 ? "首轮生成后不可修改" : undefined}>
-                    <input
-                      type="checkbox"
-                      checked={state.event.formatConfig.randomizeSwissFirstRound}
-                      disabled={syncedEvent.swissRounds.length > 0}
-                      onChange={(event) => updateTournamentConfig({ randomizeSwissFirstRound: event.target.checked })}
-                    />
-                    首轮随机配对（忽略种子）
-                  </label>
                   <label className="toggle-row">
                     <input
                       type="checkbox"
@@ -806,10 +820,16 @@ function App() {
                   <h2>编排结果</h2>
                   <p>未开始的赛事场次可调整场次编号、现场分组和场地；对阵关系由赛制引擎维护。</p>
                 </div>
-                <button className="danger-action" onClick={clearArrangement} disabled={arrangementMatches.length === 0}>
-                  <Trash2 size={18} />
-                  清空编排
-                </button>
+                <div className="result-actions">
+                  <button onClick={() => exportArrangementToExcel({ ...state, event: syncedEvent })} disabled={arrangementMatches.length === 0}>
+                    <FileSpreadsheet size={18} />
+                    导出编排 Excel
+                  </button>
+                  <button className="danger-action" onClick={clearArrangement} disabled={arrangementMatches.length === 0}>
+                    <Trash2 size={18} />
+                    清空编排
+                  </button>
+                </div>
               </div>
               {arrangementMatches.length > 0 ? (
                 <div className="table-wrap arrangement-table">

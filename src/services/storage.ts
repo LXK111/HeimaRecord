@@ -50,13 +50,14 @@ export function createDefaultTournamentEvent(): TournamentEvent {
     stage: "setup",
     formatConfig: {
       format: "group_bracket",
+      useSeeding: false,
+      pisteCount: 1,
       groupSize: 6,
       groupAdvancers: 2,
       totalAdvancers: 4,
+      avoidClubInGroups: true,
       swissRounds: 5,
       swissAdvancers: 8,
-      swissGroupCount: 1,
-      randomizeSwissFirstRound: false,
       avoidClubInSwiss: true,
       allowSwissBye: true,
       generateThirdPlaceMatch: true,
@@ -74,14 +75,24 @@ export function createDefaultTournamentEvent(): TournamentEvent {
 
 function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentEvent {
   const fallback = createDefaultTournamentEvent();
+  const legacyFormatConfig = event?.formatConfig as (Partial<TournamentEvent["formatConfig"]> & {
+    swissGroupCount?: number;
+    randomizeSwissFirstRound?: boolean;
+  }) | undefined;
+  const formatConfig = {
+    ...fallback.formatConfig,
+    ...event?.formatConfig,
+    // 旧备份默认按种子编排；历史“首轮随机”打开时迁移为关闭全局种子。
+    useSeeding: legacyFormatConfig
+      ? legacyFormatConfig.useSeeding ?? !(legacyFormatConfig.randomizeSwissFirstRound ?? false)
+      : fallback.formatConfig.useSeeding,
+    pisteCount: normalizePisteCount(legacyFormatConfig?.pisteCount ?? legacyFormatConfig?.swissGroupCount),
+  };
   return {
     ...fallback,
     ...event,
     players: event?.players ?? [],
-    formatConfig: {
-      ...fallback.formatConfig,
-      ...event?.formatConfig,
-    },
+    formatConfig,
     eventPointConfig: {
       ...fallback.eventPointConfig,
       ...event?.eventPointConfig,
@@ -101,6 +112,10 @@ function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentE
     bracketNodes: event?.bracketNodes ?? [],
     updatedAt: event?.updatedAt ?? new Date().toISOString(),
   };
+}
+
+function normalizePisteCount(value?: number) {
+  return Math.min(26, Math.max(1, Math.trunc(value || 1)));
 }
 
 export function createDefaultEventPointConfig(): EventPointConfig {

@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { defaultRuleSet } from "./rules";
 import {
   advanceBracket,
   calculateRankings,
+  countGroupClubConflicts,
   createTournamentPlayer,
   generateDirectEliminationBracket,
   generateDoubleEliminationBracket,
@@ -13,7 +14,7 @@ import {
   refreshTournamentRankings,
   syncTournamentEvent,
 } from "./tournament";
-import { buildTournamentResultsWorkbook } from "../services/exporter";
+import { buildArrangementWorkbook, buildTournamentResultsWorkbook } from "../services/exporter";
 import { createDefaultTournamentEvent, createInitialState } from "../services/storage";
 import type { Match, TournamentEvent, TournamentFormat } from "../types";
 
@@ -40,7 +41,7 @@ describe("赛事编排验收", () => {
   });
 
   it("瑞士轮必须先锁定当前轮，且下一轮不会重复对阵", () => {
-    const event = createEvent("swiss_bracket", 8, { swissRounds: 2, swissAdvancers: 4, swissGroupCount: 2 });
+    const event = createEvent("swiss_bracket", 8, { swissRounds: 2, swissAdvancers: 4, pisteCount: 2 });
     const firstRound = generateSwissFirstRound(event, defaultRuleSet, []);
     expect(firstRound.matches).toHaveLength(4);
     expect(new Set(firstRound.matches.map((match) => match.groupName))).toEqual(new Set(["瑞士A组", "瑞士B组"]));
@@ -64,25 +65,22 @@ describe("赛事编排验收", () => {
   });
 
   it("瑞士轮首轮可忽略种子随机配对，且轮空规则保持不变", () => {
-    const event = createEvent("swiss_bracket", 8);
-    const seededRound = generateSwissFirstRound(event, defaultRuleSet, []);
+    const event = createEvent("swiss_bracket", 8, { useSeeding: true });
+    const seededRound = generateSwissFirstRound(event, defaultRuleSet, [], () => 0);
     const randomEvent = {
       ...event,
-      formatConfig: { ...event.formatConfig, randomizeSwissFirstRound: true },
+      formatConfig: { ...event.formatConfig, useSeeding: false },
     };
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
-    const randomizedRound = generateSwissFirstRound(randomEvent, defaultRuleSet, []);
-    randomSpy.mockRestore();
+    const randomizedRound = generateSwissFirstRound(randomEvent, defaultRuleSet, [], () => 0);
 
     expect(randomizedRound.matches.map(pairingKey)).not.toEqual(seededRound.matches.map(pairingKey));
     expect(new Set(randomizedRound.matches.flatMap((match) => [match.redPlayerId, match.bluePlayerId])).size).toBe(8);
     expect(randomizedRound.matches.every((match) => match.events[0]?.label.includes("随机配对"))).toBe(true);
 
-    const oddEvent = createEvent("swiss_bracket", 5, { randomizeSwissFirstRound: true });
-    const oddRandomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-    const oddRound = generateSwissFirstRound(oddEvent, defaultRuleSet, []);
-    oddRandomSpy.mockRestore();
-    expect(oddRound.event.swissRounds[0].byePlayerId).toBe(oddEvent.players[4].id);
+    const oddEvent = createEvent("swiss_bracket", 5, { useSeeding: false });
+    const oddRound = generateSwissFirstRound(oddEvent, defaultRuleSet, [], () => 0.5);
+    expect(oddEvent.players.map((player) => player.id)).toContain(oddRound.event.swissRounds[0].byePlayerId);
+    expect(oddRound.matches.flatMap((match) => [match.redPlayerId, match.bluePlayerId])).not.toContain(oddRound.event.swissRounds[0].byePlayerId);
   });
 
   it("10 人直接单败生成六个轮空并完成季军赛", () => {
@@ -101,6 +99,18 @@ describe("赛事编排验收", () => {
     expect(workbook.worksheets.map((worksheet) => worksheet.name)).toEqual(["赛事摘要", "最终名次", "预赛排名", "淘汰签表", "全部场次"]);
     expect(workbook.getWorksheet("赛事摘要")?.getCell("B10").value).toBe("赛事已完成");
     expect(workbook.getWorksheet("预赛排名")?.rowCount).toBe(1);
+  });
+
+  it("直接淘汰默认随机抽签，启用种子后按种子固定签位", () => {
+    const randomEvent = createEvent("direct_bracket", 8, { useSeeding: false, pisteCount: 3 });
+    const seededEvent = { ...randomEvent, formatConfig: { ...randomEvent.formatConfig, useSeeding: true } };
+    const randomized = generateDirectEliminationBracket(randomEvent, [], defaultRuleSet, () => 0);
+    const seeded = generateDirectEliminationBracket(seededEvent, [], defaultRuleSet, () => 0);
+
+    expect(randomized.matches.map(pairingKey)).not.toEqual(seeded.matches.map(pairingKey));
+    expect(randomized.event.rankings.map((ranking) => ranking.playerId)).not.toEqual(seeded.event.rankings.map((ranking) => ranking.playerId));
+    const pisteLoads = ["场地 1", "场地 2", "场地 3"].map((piste) => randomized.matches.filter((match) => match.piste === piste).length);
+    expect(pisteLoads).toEqual([2, 1, 1]);
   });
 
   it("双败累计两负淘汰，并且只生成一场总决赛", () => {
@@ -131,6 +141,44 @@ describe("赛事编排验收", () => {
     const workbook = buildTournamentResultsWorkbook(state, []);
 
     expect(workbook.getWorksheet("赛事摘要")?.getCell("B10").value).toBe("未完赛结果");
+  });
+
+  it("小组赛尽量规避同单位，并保持整组位于同一场地", () => {
+    const event = createEvent("group_bracket", 8, { groupSize: 4, pisteCount: 2, avoidClubInGroups: true, useSeeding: true });
+    event.players = event.players.map((player, index) => ({ ...player, club: `单位${index % 4}` }));
+    const generated = generateGroupStage(event, defaultRuleSet, () => 0);
+
+    generated.event.groupNames.forEach((groupName) => {
+      const groupPlayers = generated.event.players.filter((player) => player.groupName === groupName);
+      expect(new Set(groupPlayers.map((player) => player.club)).size).toBe(groupPlayers.length);
+      expect(new Set(generated.matches.filter((match) => match.groupName === groupName).map((match) => match.piste)).size).toBe(1);
+    });
+    const pisteLoads = ["场地 1", "场地 2"].map((piste) => generated.matches.filter((match) => match.piste === piste).length);
+    expect(pisteLoads).toEqual([6, 6]);
+  });
+
+  it("同单位无法完全拆开时仍保持组容量并返回最少冲突", () => {
+    const event = createEvent("group_bracket", 4, { groupSize: 2, avoidClubInGroups: true, useSeeding: true });
+    event.players = event.players.map((player) => ({ ...player, club: "同一单位" }));
+    const generated = generateGroupStage(event, defaultRuleSet, () => 0);
+
+    expect(generated.event.groupNames.map((groupName) => generated.event.players.filter((player) => player.groupName === groupName).length)).toEqual([2, 2]);
+    expect(countGroupClubConflicts(generated.event.players)).toBe(2);
+  });
+
+  it("编排导出包含场次明细和场地统计", () => {
+    const event = createEvent("group_bracket", 8, { groupSize: 4, pisteCount: 2 });
+    const generated = generateGroupStage(event, defaultRuleSet, () => 0);
+    const workbook = buildArrangementWorkbook({ ...createInitialState(), event: generated.event, matches: generated.matches });
+
+    expect(workbook.worksheets.map((worksheet) => worksheet.name)).toEqual(["编排场次", "场地统计"]);
+    expect(workbook.getWorksheet("编排场次")?.rowCount).toBe(13);
+    expect(workbook.getWorksheet("场地统计")?.rowCount).toBe(3);
+
+    const adjustedMatches = generated.matches.map((match, index) => index === 0 ? { ...match, piste: "主场" } : match);
+    const adjustedWorkbook = buildArrangementWorkbook({ ...createInitialState(), event: generated.event, matches: adjustedMatches });
+    expect(adjustedWorkbook.getWorksheet("场地统计")?.rowCount).toBe(4);
+    expect(adjustedWorkbook.getWorksheet("场地统计")?.getCell("A4").value).toBe("主场");
   });
 });
 

@@ -1,4 +1,5 @@
 import { createEmptyMatch, createMatchEvent } from "./rules";
+import { assignGeneratedPistes, assignGroupStagePistes } from "./pisteAssignment";
 import type { BracketNode, Match, RankingRuleKey, RuleSet, SwissRound, TournamentEvent, TournamentPlayer, TournamentRanking } from "../types";
 
 type GeneratedMatches = {
@@ -35,23 +36,61 @@ export function parsePlayersText(text: string): TournamentPlayer[] {
     .filter((player) => player.name);
 }
 
-export function assignGroups(players: TournamentPlayer[], groupSize: number): { players: TournamentPlayer[]; groupNames: string[] } {
+export function assignGroups(
+  players: TournamentPlayer[],
+  groupSize: number,
+  options: { useSeeding?: boolean; avoidSameClub?: boolean; random?: () => number } = {}
+): { players: TournamentPlayer[]; groupNames: string[] } {
   const activePlayers = players.filter((player) => player.status === "active");
   const groupCount = Math.max(1, Math.ceil(activePlayers.length / Math.max(2, groupSize)));
   const groupNames = Array.from({ length: groupCount }, (_, index) => `${String.fromCharCode(65 + index)}组`);
-  const orderedPlayers = [...players].sort(comparePlayersBySeed);
-  const groupedPlayers = orderedPlayers.map((player, index) => {
-    if (player.status !== "active") return { ...player, groupName: "" };
+  const orderedPlayers = createInitialPlayerOrder(activePlayers, options.useSeeding ?? true, options.random);
+  const baseSize = Math.floor(activePlayers.length / groupCount);
+  const remainder = activePlayers.length % groupCount;
+  const capacities = groupNames.map((_, index) => baseSize + (index < remainder ? 1 : 0));
+  const groupedById = new Map<string, TournamentPlayer>();
+  const assignedGroups: TournamentPlayer[][] = groupNames.map(() => []);
+
+  orderedPlayers.forEach((player, index) => {
     const row = Math.floor(index / groupCount);
     const column = index % groupCount;
-    const groupIndex = row % 2 === 0 ? column : groupCount - column - 1;
-    return { ...player, groupName: groupNames[groupIndex] ?? groupNames[0] };
+    const preferredGroupIndex = row % 2 === 0 ? column : groupCount - column - 1;
+    const groupIndex = assignedGroups
+      .map((group, candidateIndex) => ({
+        candidateIndex,
+        isFull: group.length >= capacities[candidateIndex],
+        clubConflicts: options.avoidSameClub && player.club
+          ? group.filter((member) => member.club && member.club === player.club).length
+          : 0,
+        preferredDistance: Math.abs(candidateIndex - preferredGroupIndex),
+      }))
+      .filter((candidate) => !candidate.isFull)
+      .sort((a, b) => a.clubConflicts - b.clubConflicts || a.preferredDistance - b.preferredDistance || a.candidateIndex - b.candidateIndex)[0]
+      ?.candidateIndex ?? 0;
+    const groupedPlayer = { ...player, groupName: groupNames[groupIndex] };
+    assignedGroups[groupIndex].push(groupedPlayer);
+    groupedById.set(player.id, groupedPlayer);
   });
-  return { players: restoreOriginalPlayerOrder(players, groupedPlayers), groupNames };
+  const groupedPlayers = players.map((player) => player.status === "active" ? groupedById.get(player.id) ?? player : { ...player, groupName: "" });
+  return { players: groupedPlayers, groupNames };
 }
 
-export function generateGroupStage(event: TournamentEvent, ruleSet: RuleSet): GeneratedMatches {
-  const { players, groupNames } = assignGroups(event.players, event.formatConfig.groupSize);
+export function countGroupClubConflicts(players: TournamentPlayer[]) {
+  const groups = new Map<string, TournamentPlayer[]>();
+  players.filter((player) => player.status === "active" && player.groupName).forEach((player) => {
+    groups.set(player.groupName, [...(groups.get(player.groupName) ?? []), player]);
+  });
+  return [...groups.values()].reduce((total, group) => total + group.reduce((count, player, index) => (
+    count + group.slice(index + 1).filter((other) => player.club && other.club === player.club).length
+  ), 0), 0);
+}
+
+export function generateGroupStage(event: TournamentEvent, ruleSet: RuleSet, random: () => number = Math.random): GeneratedMatches {
+  const { players, groupNames } = assignGroups(event.players, event.formatConfig.groupSize, {
+    useSeeding: event.formatConfig.useSeeding,
+    avoidSameClub: event.formatConfig.avoidClubInGroups,
+    random,
+  });
   const matches: Match[] = [];
   let matchNo = 1;
 
@@ -94,11 +133,11 @@ export function generateGroupStage(event: TournamentEvent, ruleSet: RuleSet): Ge
       swissRounds: [],
       bracketNodes: [],
     }),
-    matches,
+    matches: assignGroupStagePistes(matches, event.formatConfig.pisteCount),
   };
 }
 
-export function generateSwissFirstRound(event: TournamentEvent, ruleSet: RuleSet, existingMatches: Match[]): GeneratedMatches {
+export function generateSwissFirstRound(event: TournamentEvent, ruleSet: RuleSet, existingMatches: Match[], random: () => number = Math.random): GeneratedMatches {
   if (event.swissRounds.length > 0) return { event: touchEvent(event), matches: [] };
   const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: SWISS_GROUP_NAME } : { ...player, groupName: "" }));
   return generateSwissRound(
@@ -113,7 +152,8 @@ export function generateSwissFirstRound(event: TournamentEvent, ruleSet: RuleSet
     },
     existingMatches,
     ruleSet,
-    1
+    1,
+    random
   );
 }
 
@@ -137,7 +177,7 @@ export function generateNextSwissRound(event: TournamentEvent, matches: Match[],
   if (!currentRound || currentRound.status !== "locked" || event.swissRounds.length >= event.formatConfig.swissRounds) {
     return { event: touchEvent(event), matches: [] };
   }
-  return generateSwissRound(event, matches, ruleSet, currentRound.roundNo + 1);
+  return generateSwissRound(event, matches, ruleSet, currentRound.roundNo + 1, Math.random);
 }
 
 export function calculateRankings(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): TournamentRanking[] {
@@ -238,13 +278,13 @@ export function generatePlayoffMatches(event: TournamentEvent, matches: Match[],
 
   return {
     event: touchEvent({ ...event, rankings }),
-    matches: generatedMatches,
+    matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
   };
 }
 
-export function generateDirectEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+export function generateDirectEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet, random: () => number = Math.random): GeneratedMatches {
   const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: DIRECT_BRACKET_GROUP_NAME } : { ...player, groupName: "" }));
-  const rankings = createDirectEliminationRankings(players);
+  const rankings = createDirectEliminationRankings(players, DIRECT_BRACKET_GROUP_NAME, event.formatConfig.useSeeding, random);
   if (rankings.length < 2) return { event: touchEvent(event), matches: [] };
   return generateInitialBracket(
     {
@@ -261,9 +301,9 @@ export function generateDirectEliminationBracket(event: TournamentEvent, matches
   );
 }
 
-export function generateDoubleEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet): GeneratedMatches {
+export function generateDoubleEliminationBracket(event: TournamentEvent, matches: Match[], ruleSet: RuleSet, random: () => number = Math.random): GeneratedMatches {
   const players = event.players.map((player) => (player.status === "active" ? { ...player, groupName: DOUBLE_ELIMINATION_GROUP_NAME } : { ...player, groupName: "" }));
-  const rankings = createDirectEliminationRankings(players, DOUBLE_ELIMINATION_GROUP_NAME);
+  const rankings = createDirectEliminationRankings(players, DOUBLE_ELIMINATION_GROUP_NAME, event.formatConfig.useSeeding, random);
   if (rankings.length < 2) return { event: touchEvent(event), matches: [] };
   const generatedMatches: Match[] = [];
   const nodes: BracketNode[] = [];
@@ -294,7 +334,7 @@ export function generateDoubleEliminationBracket(event: TournamentEvent, matches
       bracketNodes: nodes,
       stage: "bracket_ready",
     }),
-    matches: generatedMatches,
+    matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
   };
 }
 
@@ -302,7 +342,9 @@ export function generateInitialBracket(event: TournamentEvent, matches: Match[],
   const rankings = event.rankings.length ? event.rankings : calculateRankings(event, matches, ruleSet);
   const seeds = rankings
     .filter((ranking) => ranking.advanced)
-    .sort((a, b) => compareRankingRecords(a, b, event, matches))
+    .sort((a, b) => event.formatConfig.format === "direct_bracket"
+      ? a.rank - b.rank
+      : compareRankingRecords(a, b, event, matches))
     .map((ranking, index) => ({ ...ranking, seedOrder: index + 1 }));
   const bracketSize = nextPowerOfTwo(seeds.length);
   const byeCount = bracketSize - seeds.length;
@@ -362,7 +404,7 @@ export function generateInitialBracket(event: TournamentEvent, matches: Match[],
       stage: "bracket_ready",
       bracketNodes: nodes,
     }),
-    matches: generatedMatches,
+    matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
   };
 }
 
@@ -406,7 +448,7 @@ export function advanceBracket(event: TournamentEvent, matches: Match[], ruleSet
       ...event,
       bracketNodes: [...syncedNodes, ...nextNodes],
     }),
-    matches: generatedMatches,
+    matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
   };
 }
 
@@ -432,7 +474,10 @@ function advanceDoubleEliminationBracket(event: TournamentEvent, matches: Match[
   }
 
   const losses = calculateDoubleEliminationLosses(syncedNodes);
-  const activeSeeds = createDirectEliminationRankings(event.players, DOUBLE_ELIMINATION_GROUP_NAME)
+  const persistedRankings = event.rankings.length
+    ? event.rankings
+    : createDirectEliminationRankings(event.players, DOUBLE_ELIMINATION_GROUP_NAME, true);
+  const activeSeeds = persistedRankings
     .map((ranking) => ({ playerId: ranking.playerId, seedOrder: ranking.rank }))
     .filter((seed) => (losses.get(seed.playerId) ?? 0) < 2);
   const undefeatedSeeds = activeSeeds.filter((seed) => (losses.get(seed.playerId) ?? 0) === 0);
@@ -443,7 +488,10 @@ function advanceDoubleEliminationBracket(event: TournamentEvent, matches: Match[
 
   if (undefeatedSeeds.length === 1 && oneLossSeeds.length === 1) {
     generatedMatches.push(...createPairedBracketMatches(event, [undefeatedSeeds[0], oneLossSeeds[0]], matches.length, nextRoundNo, "总决赛", ruleSet, "grand_final", nextNodes));
-    return { event: touchEvent({ ...event, bracketNodes: [...syncedNodes, ...nextNodes] }), matches: generatedMatches };
+    return {
+      event: touchEvent({ ...event, bracketNodes: [...syncedNodes, ...nextNodes] }),
+      matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
+    };
   }
 
   if (undefeatedSeeds.length >= 2) {
@@ -460,7 +508,7 @@ function advanceDoubleEliminationBracket(event: TournamentEvent, matches: Match[
       ...event,
       bracketNodes: [...syncedNodes, ...nextNodes],
     }),
-    matches: generatedMatches,
+    matches: assignGeneratedPistes(generatedMatches, matches, event.formatConfig.pisteCount),
   };
 }
 
@@ -507,34 +555,37 @@ export function getCurrentSwissRound(event: TournamentEvent): SwissRound | null 
   return [...event.swissRounds].sort((a, b) => b.roundNo - a.roundNo)[0];
 }
 
-function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: RuleSet, roundNo: number): GeneratedMatches {
-  const activePlayers = event.players.filter((player) => player.status === "active").sort(comparePlayersBySeed);
+function generateSwissRound(event: TournamentEvent, matches: Match[], ruleSet: RuleSet, roundNo: number, random: () => number): GeneratedMatches {
+  const activePlayers = event.players.filter((player) => player.status === "active");
   if (activePlayers.length < 2) return { event: touchEvent(event), matches: [] };
 
   const rankings = roundNo === 1 ? [] : calculateRankings(event, matches, ruleSet);
-  const orderedPlayers = roundNo === 1 ? activePlayers : orderSwissPlayersByRanking(activePlayers, rankings);
+  const orderedPlayers = roundNo === 1
+    ? createInitialPlayerOrder(activePlayers, event.formatConfig.useSeeding, random)
+    : orderSwissPlayersByRanking(activePlayers, rankings);
   const byePlayer = orderedPlayers.length % 2 === 1 && event.formatConfig.allowSwissBye ? selectSwissByePlayer(orderedPlayers, event.swissRounds) : null;
   if (orderedPlayers.length % 2 === 1 && !byePlayer) {
     return { event: touchEvent(event), matches: [] };
   }
   const pairingPlayers = byePlayer ? orderedPlayers.filter((player) => player.id !== byePlayer.id) : orderedPlayers;
-  const randomizeFirstRound = roundNo === 1 && event.formatConfig.randomizeSwissFirstRound;
+  const randomizeFirstRound = roundNo === 1 && !event.formatConfig.useSeeding;
   const pairings = roundNo === 1
-    ? randomizeFirstRound
-      ? createRandomSwissFirstRoundPairings(pairingPlayers)
-      : createSeededSwissFirstRoundPairings(pairingPlayers)
+    ? createSeededSwissFirstRoundPairings(pairingPlayers)
     : createSwissPairings(pairingPlayers, matches, rankings, event.formatConfig.avoidClubInSwiss);
   if (!pairings) return { event: touchEvent(event), matches: [] };
 
-  const swissGroupCount = clampSwissGroupCount(event.formatConfig.swissGroupCount);
-  const generatedMatches = pairings.map(([red, blue], index) => createSwissMatch({
+  const rawMatches = pairings.map(([red, blue], index) => createSwissMatch({
     matchNo: `${matches.length + index + 1}`,
     roundNo,
-    groupName: swissVenueGroupName(index % swissGroupCount),
+    groupName: SWISS_GROUP_NAME,
     isRandomFirstRound: randomizeFirstRound,
     red,
     blue,
     ruleSet,
+  }));
+  const generatedMatches = assignGeneratedPistes(rawMatches, matches, event.formatConfig.pisteCount).map((match) => ({
+    ...match,
+    groupName: swissVenueGroupName(pisteIndexFromLabel(match.piste)),
   }));
   const swissRound: SwissRound = {
     roundNo,
@@ -574,12 +625,8 @@ function createSwissMatch(input: { matchNo: string; roundNo: number; groupName: 
     tournamentRound: input.roundNo,
     redPlayerId: input.red.id,
     bluePlayerId: input.blue.id,
-    events: [createMatchEvent(match.id, "match_created", `${pairingLabel}生成场次，分配至${input.groupName}`)],
+    events: [createMatchEvent(match.id, "match_created", `${pairingLabel}生成场次`)],
   };
-}
-
-function clampSwissGroupCount(value: number) {
-  return Math.min(26, Math.max(1, Math.trunc(value || 1)));
 }
 
 function swissVenueGroupName(index: number) {
@@ -587,11 +634,14 @@ function swissVenueGroupName(index: number) {
   return `瑞士${String.fromCharCode(65 + index)}组`;
 }
 
-function createDirectEliminationRankings(players: TournamentPlayer[], groupName = DIRECT_BRACKET_GROUP_NAME): TournamentRanking[] {
-  // 直接单败没有预赛积分，签表种子只来自选手名单的 seed 和姓名兜底排序。
-  return players
-    .filter((player) => player.status === "active")
-    .sort(comparePlayersBySeed)
+function createDirectEliminationRankings(
+  players: TournamentPlayer[],
+  groupName = DIRECT_BRACKET_GROUP_NAME,
+  useSeeding = true,
+  random: () => number = Math.random
+): TournamentRanking[] {
+  // 直接淘汰没有预赛积分，此处排名只用于固定本次抽签顺序。
+  return createInitialPlayerOrder(players.filter((player) => player.status === "active"), useSeeding, random)
     .map((player, index) => ({
       rank: index + 1,
       playerId: player.id,
@@ -631,20 +681,6 @@ function selectSwissByePlayer(players: TournamentPlayer[], rounds: SwissRound[])
 function createSeededSwissFirstRoundPairings(players: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> {
   const half = players.length / 2;
   return players.slice(0, half).map((red, index) => [red, players[index + half]]);
-}
-
-function createRandomSwissFirstRoundPairings(players: TournamentPlayer[]): Array<[TournamentPlayer, TournamentPlayer]> {
-  const shuffled = [...players];
-  // Fisher-Yates 只在生成首轮时执行一次，生成后的对阵由赛事状态持久化。
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const targetIndex = Math.floor(Math.random() * (index + 1));
-    [shuffled[index], shuffled[targetIndex]] = [shuffled[targetIndex], shuffled[index]];
-  }
-  const pairings: Array<[TournamentPlayer, TournamentPlayer]> = [];
-  for (let index = 0; index < shuffled.length; index += 2) {
-    pairings.push([shuffled[index], shuffled[index + 1]]);
-  }
-  return pairings;
 }
 
 function createSwissPairings(
@@ -970,9 +1006,20 @@ function comparePlayersBySeed(a: TournamentPlayer, b: TournamentPlayer) {
   return seedA - seedB || a.name.localeCompare(b.name, "zh-Hans-CN");
 }
 
-function restoreOriginalPlayerOrder(original: TournamentPlayer[], grouped: TournamentPlayer[]) {
-  const groupedById = new Map(grouped.map((player) => [player.id, player]));
-  return original.map((player) => groupedById.get(player.id) ?? player);
+function createInitialPlayerOrder(players: TournamentPlayer[], useSeeding: boolean, random: () => number = Math.random) {
+  const ordered = [...players].sort(comparePlayersBySeed);
+  if (useSeeding) return ordered;
+  // 随机抽签只执行一次，调用方会把生成结果写入赛事状态并持久化。
+  for (let index = ordered.length - 1; index > 0; index -= 1) {
+    const targetIndex = Math.floor(random() * (index + 1));
+    [ordered[index], ordered[targetIndex]] = [ordered[targetIndex], ordered[index]];
+  }
+  return ordered;
+}
+
+function pisteIndexFromLabel(value: string) {
+  const match = /^场地\s+(\d+)$/.exec(value.trim());
+  return Math.max(0, Number(match?.[1] ?? 1) - 1);
 }
 
 function nextPowerOfTwo(value: number) {

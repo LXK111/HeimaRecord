@@ -170,13 +170,14 @@ export interface TournamentPlayer {
 
 export interface TournamentFormatConfig {
   format: TournamentFormat;
+  useSeeding: boolean;
+  pisteCount: number;
   groupSize: number;
   groupAdvancers: number;
   totalAdvancers: number;
+  avoidClubInGroups: boolean;
   swissRounds: number;
   swissAdvancers: number;
-  swissGroupCount: number;
-  randomizeSwissFirstRound: boolean;
   avoidClubInSwiss: boolean;
   allowSwissBye: boolean;
   generateThirdPlaceMatch: boolean;

@@ -1240,6 +1240,15 @@ th {
     flex-direction: column;
   }
 
+  .result-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .result-actions button {
+    max-width: 100%;
+  }
+
   .player-input-grid {
     grid-template-columns: 1fr;
   }

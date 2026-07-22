@@ -23,7 +23,7 @@ describe("选手分组结果", () => {
 
   it("瑞士轮按每轮现场分组输出对阵，并单独标记轮空选手", () => {
     const event = createEvent(5, "swiss_bracket");
-    event.formatConfig.swissGroupCount = 2;
+    event.formatConfig.pisteCount = 2;
     const generated = generateSwissFirstRound(event, defaultRuleSet, []);
 
     const results = buildTournamentGroupingResults(generated.event, generated.matches);

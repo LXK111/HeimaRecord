@@ -73,6 +73,56 @@ export async function exportGroupingResultsToExcel(state: TournamentState) {
   await downloadWorkbook(workbook, "heima-record-grouping-results.xlsx");
 }
 
+export async function exportArrangementToExcel(state: TournamentState) {
+  const workbook = buildArrangementWorkbook(state);
+  await downloadWorkbook(workbook, "heima-record-arrangement.xlsx");
+}
+
+export function buildArrangementWorkbook(state: TournamentState) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "heima-record";
+  workbook.created = new Date();
+  const matches = state.matches.filter((match) => match.tournamentStage);
+  const configuredPistes = Array.from({ length: state.event.formatConfig.pisteCount }, (_, index) => `场地 ${index + 1}`);
+  addTableWorksheet(
+    workbook,
+    "编排场次",
+    ["场次编号", "阶段", "轮次", "分组", "场地", "红方", "红方单位", "蓝方", "蓝方单位", "状态", "比分", "胜方"],
+    matches.map((match) => ({
+      场次编号: match.matchNo,
+      阶段: tournamentStageLabel(match.tournamentStage),
+      轮次: match.tournamentRound ?? "",
+      分组: match.groupName,
+      场地: match.piste,
+      红方: match.red.name,
+      红方单位: match.red.club,
+      蓝方: match.blue.name,
+      蓝方单位: match.blue.club,
+      状态: match.status === "finished" ? "已结束" : match.status === "running" ? "进行中" : "未开始",
+      比分: `${match.redScore}:${match.blueScore}`,
+      胜方: getWinnerLabel(match.winner, match),
+    }))
+  );
+  addTableWorksheet(
+    workbook,
+    "场地统计",
+    ["场地", "承载分组", "总场次数", "已完成场次"],
+    [
+      ...configuredPistes,
+      ...new Set(matches.map((match) => match.piste.trim()).filter((piste) => piste && !configuredPistes.includes(piste))),
+    ].map((piste) => {
+      const pisteMatches = matches.filter((match) => match.piste === piste);
+      return {
+        场地: piste,
+        承载分组: [...new Set(pisteMatches.map((match) => match.groupName).filter(Boolean))].join("、"),
+        总场次数: pisteMatches.length,
+        已完成场次: pisteMatches.filter((match) => match.status === "finished").length,
+      };
+    })
+  );
+  return workbook;
+}
+
 export function buildGroupingResultsWorkbook(state: TournamentState) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "heima-record";
@@ -307,6 +357,20 @@ function bracketStageLabel(stage: TournamentStageType) {
     grand_final: "总决赛",
   };
   return labels[stage] ?? "淘汰赛";
+}
+
+function tournamentStageLabel(stage?: TournamentStageType) {
+  const labels: Partial<Record<TournamentStageType, string>> = {
+    group: "小组赛",
+    playoff: "附加赛",
+    swiss: "瑞士轮",
+    bracket: "单败淘汰",
+    third_place: "季军赛",
+    winner_bracket: "胜者组",
+    loser_bracket: "败者组",
+    grand_final: "总决赛",
+  };
+  return stage ? labels[stage] ?? stage : "";
 }
 
 function bracketStatusLabel(status: BracketNode["status"]) {
