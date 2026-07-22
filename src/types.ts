@@ -14,6 +14,10 @@ export type TournamentEventStage = "setup" | "group_ready" | "group_finished" | 
 
 export type TournamentFormat = "group_bracket" | "swiss_bracket" | "direct_bracket" | "double_elimination";
 
+export type GroupAllocationMode = "group_size" | "group_count";
+
+export type MatchRuleProfileKey = "preliminary" | "elimination" | "finals";
+
 export type SwissRoundStatus = "published" | "locked";
 
 export type RankingRuleKey = "eventPoints" | "realWins" | "scoreDiff" | "disciplinePenalty" | "headToHead" | "playoff";
@@ -107,8 +111,8 @@ export interface RoundRecord {
 export interface AdjudicationInput {
   redScoreDelta: number;
   blueScoreDelta: number;
-  redWarningId: string;
-  blueWarningId: string;
+  redWarnings: Record<string, number>;
+  blueWarnings: Record<string, number>;
 }
 
 export interface MatchSnapshot {
@@ -130,11 +134,13 @@ export interface MatchSnapshot {
 
 export interface Match {
   id: string;
+  eventId?: string;
   matchNo: string;
   groupName: string;
   piste: string;
   tournamentStage?: TournamentStageType;
   tournamentRound?: number;
+  ruleProfile?: MatchRuleProfileKey;
   bracketNodeId?: string;
   redPlayerId?: string;
   bluePlayerId?: string;
@@ -172,7 +178,9 @@ export interface TournamentFormatConfig {
   format: TournamentFormat;
   useSeeding: boolean;
   pisteCount: number;
+  groupAllocationMode: GroupAllocationMode;
   groupSize: number;
+  groupCount: number;
   groupAdvancers: number;
   totalAdvancers: number;
   avoidClubInGroups: boolean;
@@ -181,6 +189,17 @@ export interface TournamentFormatConfig {
   avoidClubInSwiss: boolean;
   allowSwissBye: boolean;
   generateThirdPlaceMatch: boolean;
+}
+
+export interface StageRuleConfig {
+  durationSeconds: number;
+  targetScore: number;
+}
+
+export interface TournamentStageRuleConfig {
+  preliminary: StageRuleConfig;
+  elimination: StageRuleConfig;
+  finals: StageRuleConfig;
 }
 
 export interface EventPointConfig {
@@ -242,9 +261,13 @@ export interface SwissRound {
 }
 
 export interface TournamentEvent {
+  id: string;
   players: TournamentPlayer[];
   stage: TournamentEventStage;
+  startedAt: string | null;
+  rulesLockedAt: string | null;
   formatConfig: TournamentFormatConfig;
+  stageRuleConfig: TournamentStageRuleConfig;
   eventPointConfig: EventPointConfig;
   rankingRules: RankingRuleConfig[];
   disciplinePointConfig: DisciplinePointConfig;

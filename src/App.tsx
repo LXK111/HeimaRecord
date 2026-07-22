@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronRight,
+  Copy,
   Download,
   FileSpreadsheet,
   FolderUp,
@@ -35,6 +37,8 @@ import {
 } from "./domain/rules";
 import {
   advanceBracket,
+  calculateConfiguredGroupCount,
+  calculateMinimumGroupAdvancers,
   calculateRankings,
   countGroupClubConflicts,
   generateDirectEliminationBracket,
@@ -50,6 +54,8 @@ import {
   refreshTournamentRankings,
   syncTournamentEvent,
 } from "./domain/tournament";
+import { resolveMatchRuleSet } from "./domain/matchRules";
+import { getNextMatchOnSamePiste, startTournament } from "./domain/tournamentLifecycle";
 import {
   buildTournamentGroupingResults,
   hasGroupingResults,
@@ -65,11 +71,12 @@ import {
 } from "./domain/tournamentState";
 import { exportStateBackup, parseStateBackup } from "./services/backup";
 import { exportArrangementToExcel, exportGroupingResultsToExcel, exportMatchesToCsv, exportMatchesToExcel, exportTournamentResultsToExcel } from "./services/exporter";
-import { parseMatchFile } from "./services/importer";
+import { parseMatchImportPackage } from "./services/importer";
 import { parsePlayerFile } from "./services/playerImporter";
+import { mergeTournamentResults, parseTournamentResultFile } from "./services/resultImporter";
 import { exportRuleSetToExcel, parseRuleFile } from "./services/ruleConfig";
 import { createInitialState, loadState, saveState } from "./services/storage";
-import type { AdjudicationInput, Match, RuleSet, TournamentState, Winner } from "./types";
+import type { AdjudicationInput, Match, RuleSet, TournamentStageRuleConfig, TournamentState, Winner } from "./types";
 
 type ViewKey = "home" | "players" | "tournament" | "matches" | "console" | "rankings" | "bracket" | "rules" | "results";
 
@@ -84,6 +91,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [importMessage, setImportMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [resultImportMessage, setResultImportMessage] = useState("");
   const [ruleMessage, setRuleMessage] = useState("");
   const [playerMessage, setPlayerMessage] = useState("");
   const [tournamentMessage, setTournamentMessage] = useState("");
@@ -92,8 +100,8 @@ function App() {
   const [adjudication, setAdjudication] = useState<AdjudicationInput>({
     redScoreDelta: 0,
     blueScoreDelta: 0,
-    redWarningId: "",
-    blueWarningId: "",
+    redWarnings: {},
+    blueWarnings: {},
   });
   const saveTimer = useRef<number | null>(null);
 
@@ -108,6 +116,15 @@ function App() {
   const groupingResults = useMemo(() => buildTournamentGroupingResults(syncedEvent, state.matches), [syncedEvent, state.matches]);
   const liveRankings = useMemo(() => calculateRankings(syncedEvent, state.matches, state.ruleSet), [syncedEvent, state.matches, state.ruleSet]);
   const currentSwissRound = useMemo(() => getCurrentSwissRound(syncedEvent), [syncedEvent]);
+  const selectedMatchRule = useMemo(
+    () => selectedMatch ? resolveMatchRuleSet(state.ruleSet, state.event.stageRuleConfig, selectedMatch) : state.ruleSet,
+    [selectedMatch, state.event.stageRuleConfig, state.ruleSet]
+  );
+  const rulesLocked = Boolean(state.event.rulesLockedAt);
+  const nextMatchOnSamePiste = useMemo(
+    () => selectedMatch ? getNextMatchOnSamePiste(state.matches, selectedMatch) : null,
+    [selectedMatch, state.matches]
+  );
   const isGroupFormat = state.event.formatConfig.format === "group_bracket";
   const isSwissFormat = state.event.formatConfig.format === "swiss_bracket";
   const isDirectBracketFormat = state.event.formatConfig.format === "direct_bracket";
@@ -134,7 +151,7 @@ function App() {
       updateSelectedMatch((match) => {
         if (match.status !== "running") return match;
         const next = touch({ ...match, remainingSeconds: Math.max(0, match.remainingSeconds - 1) });
-        return evaluateTimeUp(next, state.ruleSet);
+        return evaluateTimeUp(next, resolveMatchRuleSet(state.ruleSet, state.event.stageRuleConfig, match));
       });
     }, 1000);
     return () => window.clearInterval(timer);
@@ -144,14 +161,14 @@ function App() {
     setState((current) => patcher(current));
   }
 
-  function updateSelectedMatch(updater: (match: Match) => Match) {
+  function updateSelectedMatch(updater: (match: Match, current: TournamentState) => Match) {
     patchState((current) => {
       const targetId = current.selectedMatchId ?? current.matches[0]?.id;
       if (!targetId) return current;
       return {
         ...current,
         selectedMatchId: targetId,
-        matches: current.matches.map((match) => (match.id === targetId ? updater(match) : match)),
+        matches: current.matches.map((match) => (match.id === targetId ? updater(match, current) : match)),
       };
     });
   }
@@ -161,12 +178,27 @@ function App() {
     if (state.matches.length > 0 && !window.confirm("导入场次将替换当前全部场次，并清空现有赛事编排。是否继续？")) return;
     setImportMessage("正在解析文件...");
     try {
-      const matches = await parseMatchFile(file, state.ruleSet);
+      const imported = await parseMatchImportPackage(file, state.ruleSet);
+      const matches = imported.matches;
       if (matches.length === 0) {
         setImportMessage("没有识别到有效场次，请检查红方、蓝方字段。");
         return;
       }
-      patchState((current) => replaceMatchesWithImported(current, matches));
+      patchState((current) => {
+        const replaced = replaceMatchesWithImported(current, matches);
+        return {
+          ...replaced,
+          name: imported.name ?? replaced.name,
+          ruleSet: imported.ruleSet ?? replaced.ruleSet,
+          event: {
+            ...replaced.event,
+            id: imported.eventId ?? matches.find((match) => match.eventId)?.eventId ?? replaced.event.id,
+            stageRuleConfig: imported.stageRuleConfig ?? replaced.event.stageRuleConfig,
+            startedAt: imported.startedAt ?? replaced.event.startedAt,
+            rulesLockedAt: imported.rulesLockedAt ?? replaced.event.rulesLockedAt,
+          },
+        };
+      });
       setActiveView("matches");
       setImportMessage(`已导入 ${matches.length} 场比赛。`);
     } catch (error) {
@@ -185,6 +217,27 @@ function App() {
     } catch (error) {
       setBackupMessage(error instanceof Error ? error.message : "恢复失败，请检查 JSON 备份文件。");
     }
+  }
+
+  async function handleResultImport(file: File | null) {
+    if (!file) return;
+    setResultImportMessage("正在校验赛事 ID 并合并结果...");
+    try {
+      const imported = await parseTournamentResultFile(file);
+      const merged = mergeTournamentResults(state, imported);
+      setState({ ...merged.state, event: syncTournamentEvent(merged.state.event, merged.state.matches) });
+      const conflictText = merged.report.conflicts.length > 0 ? `；发现 ${merged.report.conflicts.length} 场冲突，已保留本机结果：${merged.report.conflicts.join("、")}` : "";
+      const mismatchText = merged.report.eventMismatch ? "；文件中存在其他赛事 ID 的结果，已跳过" : "";
+      setResultImportMessage(`已合并 ${merged.report.applied} 场，重复 ${merged.report.duplicates} 场，跳过 ${merged.report.skipped} 场${conflictText}${mismatchText}。`);
+    } catch (error) {
+      setResultImportMessage(error instanceof Error ? error.message : "结果导入失败，请检查文件格式。");
+    }
+  }
+
+  function handleResultsPageDrop(file: File | null) {
+    if (!file) return;
+    if (file.name.toLowerCase().endsWith(".json")) void handleBackupImport(file);
+    else void handleResultImport(file);
   }
 
   function resetTournament() {
@@ -216,20 +269,28 @@ function App() {
   }
 
   function setMatchStatus(status: Match["status"]) {
-    updateSelectedMatch((match) => {
+    patchState((current) => {
+      const targetId = current.selectedMatchId ?? current.matches[0]?.id;
+      if (!targetId) return current;
+      const target = current.matches.find((match) => match.id === targetId);
+      const nextState = status === "running" && target?.tournamentStage ? startTournament(current) : current;
       const eventType = status === "running" ? "timer_started" : "timer_paused";
       const label = status === "running" ? "计时开始" : "计时暂停";
-      return touch({
-        ...match,
-        status,
-        events: [...match.events, createMatchEvent(match.id, eventType, label)],
-      });
+      return {
+        ...nextState,
+        matches: nextState.matches.map((match) => match.id === targetId ? touch({
+          ...match,
+          status,
+          events: [...match.events, createMatchEvent(match.id, eventType, label)],
+        }) : match),
+      };
     });
   }
 
   function resetTimer() {
-    updateSelectedMatch((match) => {
-      const duration = match.isOvertime ? state.ruleSet.overtimeSeconds : state.ruleSet.durationSeconds;
+    updateSelectedMatch((match, current) => {
+      const matchRule = resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match);
+      const duration = match.isOvertime ? matchRule.overtimeSeconds : matchRule.durationSeconds;
       return touch({
         ...match,
         status: "paused",
@@ -240,20 +301,20 @@ function App() {
   }
 
   function addHit(side: "red" | "blue", zoneId: string) {
-    updateSelectedMatch((match) => recordHit(match, side, zoneId, state.ruleSet));
+    updateSelectedMatch((match, current) => recordHit(match, side, zoneId, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
   }
 
   function addRoundResult(result: "red" | "blue" | "double" | "none") {
-    updateSelectedMatch((match) => recordRoundResult(match, result, state.ruleSet));
+    updateSelectedMatch((match, current) => recordRoundResult(match, result, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
   }
 
   function addWarning(side: "red" | "blue", warningId: string) {
-    updateSelectedMatch((match) => applyWarning(match, side, warningId, state.ruleSet));
+    updateSelectedMatch((match, current) => applyWarning(match, side, warningId, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
   }
 
   function submitAdjudication() {
-    updateSelectedMatch((match) => recordAdjudication(match, adjudication, state.ruleSet));
-    setAdjudication({ redScoreDelta: 0, blueScoreDelta: 0, redWarningId: "", blueWarningId: "" });
+    updateSelectedMatch((match, current) => recordAdjudication(match, adjudication, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
+    setAdjudication({ redScoreDelta: 0, blueScoreDelta: 0, redWarnings: {}, blueWarnings: {} });
   }
 
   function undoLastAction() {
@@ -261,7 +322,7 @@ function App() {
   }
 
   function resetCurrentMatch() {
-    updateSelectedMatch((match) => resetMatch(match, state.ruleSet));
+    updateSelectedMatch((match, current) => resetMatch(match, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
   }
 
   function recordCurrentAppeal() {
@@ -269,7 +330,7 @@ function App() {
   }
 
   function adjustScoreAfterFinish(side: "red" | "blue", delta: number) {
-    updateSelectedMatch((match) => adjustFinishedScore(match, side, delta, adjustmentReason, state.ruleSet));
+    updateSelectedMatch((match, current) => adjustFinishedScore(match, side, delta, adjustmentReason, resolveMatchRuleSet(current.ruleSet, current.event.stageRuleConfig, match)));
   }
 
   function adjustWinnerAfterFinish(winner: Winner) {
@@ -282,6 +343,10 @@ function App() {
 
   async function handleRuleImport(file: File | null) {
     if (!file) return;
+    if (rulesLocked) {
+      setRuleMessage("赛事已经开始，规则已冻结，不能再导入规则。");
+      return;
+    }
     setRuleMessage("正在导入规则...");
     try {
       const ruleSet = await parseRuleFile(file, state.ruleSet);
@@ -333,17 +398,37 @@ function App() {
   }
 
   function updateTournamentConfig(patch: Partial<TournamentState["event"]["formatConfig"]>) {
-    patchState((current) => ({
+    patchState((current) => {
+      if (current.event.rulesLockedAt) return current;
+      let formatConfig = { ...current.event.formatConfig, ...patch };
+      if (formatConfig.format === "group_bracket") {
+        const activeCount = current.event.players.filter((player) => player.status === "active").length;
+        const draftEvent = { ...current.event, formatConfig };
+        const groupCount = calculateConfiguredGroupCount(draftEvent);
+        const smallestGroupSize = groupCount > 0 ? Math.floor(activeCount / groupCount) : 0;
+        if (smallestGroupSize > 0) formatConfig = { ...formatConfig, groupAdvancers: Math.min(formatConfig.groupAdvancers, smallestGroupSize) };
+        const minimum = calculateMinimumGroupAdvancers({ ...draftEvent, formatConfig });
+        formatConfig = { ...formatConfig, totalAdvancers: Math.max(minimum, Math.min(activeCount || minimum, formatConfig.totalAdvancers)) };
+      }
+      return { ...current, event: { ...current.event, formatConfig } };
+    });
+  }
+
+  function updateStageRule(profile: keyof TournamentStageRuleConfig, patch: Partial<TournamentStageRuleConfig["preliminary"]>) {
+    patchState((current) => current.event.rulesLockedAt ? current : ({
       ...current,
       event: {
         ...current.event,
-        formatConfig: { ...current.event.formatConfig, ...patch },
+        stageRuleConfig: {
+          ...current.event.stageRuleConfig,
+          [profile]: { ...current.event.stageRuleConfig[profile], ...patch },
+        },
       },
     }));
   }
 
   function updateEventPointConfig(patch: Partial<TournamentState["event"]["eventPointConfig"]>) {
-    patchState((current) => ({
+    patchState((current) => current.event.rulesLockedAt ? current : ({
       ...current,
       event: {
         ...current.event,
@@ -353,7 +438,7 @@ function App() {
   }
 
   function updateDisciplineConfig(patch: Partial<TournamentState["event"]["disciplinePointConfig"]>) {
-    patchState((current) => ({
+    patchState((current) => current.event.rulesLockedAt ? current : ({
       ...current,
       event: {
         ...current.event,
@@ -367,7 +452,7 @@ function App() {
   }
 
   function updateWarningDeduction(warningId: string, deduction: number) {
-    patchState((current) => ({
+    patchState((current) => current.event.rulesLockedAt ? current : ({
       ...current,
       event: {
         ...current.event,
@@ -383,7 +468,7 @@ function App() {
   }
 
   function toggleRankingRule(ruleKey: TournamentState["event"]["rankingRules"][number]["key"], enabled: boolean) {
-    patchState((current) => ({
+    patchState((current) => current.event.rulesLockedAt ? current : ({
       ...current,
       event: {
         ...current.event,
@@ -394,6 +479,7 @@ function App() {
 
   function moveRankingRule(ruleKey: TournamentState["event"]["rankingRules"][number]["key"], direction: -1 | 1) {
     patchState((current) => {
+      if (current.event.rulesLockedAt) return current;
       const rules = [...current.event.rankingRules].sort((a, b) => a.priority - b.priority);
       const index = rules.findIndex((rule) => rule.key === ruleKey);
       const targetIndex = index + direction;
@@ -408,6 +494,36 @@ function App() {
         },
       };
     });
+  }
+
+  function updateRuleSet(patch: Partial<RuleSet>) {
+    patchState((current) => current.event.rulesLockedAt ? current : ({
+      ...current,
+      ruleSet: { ...current.ruleSet, ...patch },
+    }));
+  }
+
+  function beginTournament() {
+    if (arrangementMatches.length === 0) {
+      setTournamentMessage("请先完成赛事编排，再开始赛事。");
+      return;
+    }
+    patchState((current) => startTournament(current));
+    setTournamentMessage("赛事已开始，计分、排名及阶段规则已冻结。");
+  }
+
+  async function copyEventId() {
+    try {
+      await navigator.clipboard.writeText(state.event.id);
+      setTournamentMessage("赛事 ID 已复制。");
+    } catch {
+      setTournamentMessage(`赛事 ID：${state.event.id}`);
+    }
+  }
+
+  function openNextMatch() {
+    if (!nextMatchOnSamePiste) return;
+    patchState((current) => ({ ...current, selectedMatchId: nextMatchOnSamePiste.id }));
   }
 
   function generateGroupMatches() {
@@ -594,10 +710,16 @@ function App() {
                 <h2>{state.name}</h2>
                 <p>{tournamentFormatLabel(state.event.formatConfig.format)} · {tournamentStageLabel(syncedEvent.stage)}</p>
               </div>
-              <button className="danger-action" onClick={resetTournament}>
-                <RotateCcw size={18} />
-                重置赛事
-              </button>
+              <div className="result-actions">
+                <button className="primary-action" onClick={beginTournament} disabled={rulesLocked || arrangementMatches.length === 0}>
+                  <Play size={18} />
+                  {rulesLocked ? "赛事已开始" : "开始赛事"}
+                </button>
+                <button className="danger-action" onClick={resetTournament}>
+                  <RotateCcw size={18} />
+                  重置赛事
+                </button>
+              </div>
             </div>
             <div className="home-metrics">
               <div>
@@ -612,6 +734,17 @@ function App() {
                 <span>当前阶段</span>
                 <strong>{tournamentStageLabel(syncedEvent.stage)}</strong>
               </div>
+              <div>
+                <span>规则状态</span>
+                <strong>{rulesLocked ? "已冻结" : "可编辑"}</strong>
+              </div>
+            </div>
+            <div className="event-id-row">
+              <div>
+                <span>赛事 ID</span>
+                <code>{state.event.id}</code>
+              </div>
+              <button className="icon-button" title="复制赛事 ID" aria-label="复制赛事 ID" onClick={copyEventId}><Copy size={17} /></button>
             </div>
             <div className="progress-section">
               <div>
@@ -685,80 +818,80 @@ function App() {
               </div>
               <span className="stage-badge">{tournamentStageLabel(syncedEvent.stage)}</span>
             </div>
-            <div className="rules-grid">
-              <label className="field">
-                <span>赛制</span>
-                <select
-                  value={state.event.formatConfig.format}
-                  onChange={(event) => updateTournamentConfig({ format: event.target.value as TournamentState["event"]["formatConfig"]["format"] })}
-                >
-                  <option value="group_bracket">小组循环 + 单败淘汰</option>
-                  <option value="swiss_bracket">瑞士轮 + 单败淘汰</option>
-                  <option value="direct_bracket">直接单败淘汰赛</option>
-                  <option value="double_elimination">双败淘汰赛</option>
-                </select>
-              </label>
-              <NumberField
-                label="场地数量"
-                value={state.event.formatConfig.pisteCount}
-                min={1}
-                max={26}
-                onChange={(value) => updateTournamentConfig({ pisteCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })}
-              />
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={state.event.formatConfig.useSeeding}
-                  onChange={(event) => updateTournamentConfig({ useSeeding: event.target.checked })}
-                />
-                采用种子编排
-              </label>
-              {isGroupFormat && (
-                <>
-                  <NumberField label="每组人数" value={state.event.formatConfig.groupSize} onChange={(value) => updateTournamentConfig({ groupSize: value })} />
-                  <NumberField label="每组出线人数" value={state.event.formatConfig.groupAdvancers} onChange={(value) => updateTournamentConfig({ groupAdvancers: value })} />
-                  <NumberField label="总晋级人数" value={state.event.formatConfig.totalAdvancers} onChange={(value) => updateTournamentConfig({ totalAdvancers: value })} />
-                  <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={state.event.formatConfig.avoidClubInGroups}
-                      onChange={(event) => updateTournamentConfig({ avoidClubInGroups: event.target.checked })}
-                    />
-                    小组赛尽量避开同单位
-                  </label>
-                </>
-              )}
-              {isSwissFormat && (
-                <>
-                  <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} min={1} onChange={(value) => updateTournamentConfig({ swissRounds: value })} />
-                  <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} min={2} onChange={(value) => updateTournamentConfig({ swissAdvancers: value })} />
-                  <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={state.event.formatConfig.avoidClubInSwiss}
-                      onChange={(event) => updateTournamentConfig({ avoidClubInSwiss: event.target.checked })}
-                    />
-                    瑞士轮尽量避开同单位
-                  </label>
-                  <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={state.event.formatConfig.allowSwissBye}
-                      onChange={(event) => updateTournamentConfig({ allowSwissBye: event.target.checked })}
-                    />
-                    奇数人数允许轮空
-                  </label>
-                </>
-              )}
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={state.event.formatConfig.generateThirdPlaceMatch}
-                  onChange={(event) => updateTournamentConfig({ generateThirdPlaceMatch: event.target.checked })}
-                />
-                生成季军赛
-              </label>
+            <div className="tournament-identity">
+              <div><span>赛事 ID</span><code>{state.event.id}</code></div>
+              <span className={`rule-status ${rulesLocked ? "locked" : ""}`}>{rulesLocked ? "规则已冻结" : "规则可编辑"}</span>
             </div>
+            <fieldset className="tournament-config" disabled={rulesLocked}>
+              <section className="config-section">
+                <h3>基础配置</h3>
+                <div className="config-grid basic-config-grid">
+                  <label className="field">
+                    <span>赛制</span>
+                    <select value={state.event.formatConfig.format} onChange={(event) => updateTournamentConfig({ format: event.target.value as TournamentState["event"]["formatConfig"]["format"] })}>
+                      <option value="group_bracket">小组循环 + 单败淘汰</option>
+                      <option value="swiss_bracket">瑞士轮 + 单败淘汰</option>
+                      <option value="direct_bracket">直接单败淘汰赛</option>
+                      <option value="double_elimination">双败淘汰赛</option>
+                    </select>
+                  </label>
+                  <NumberField label="场地数量" value={state.event.formatConfig.pisteCount} min={1} max={26} onChange={(value) => updateTournamentConfig({ pisteCount: Math.min(26, Math.max(1, Math.trunc(value || 1))) })} />
+                  {isGroupFormat && (
+                    <label className="field">
+                      <span>分组依据</span>
+                      <select value={state.event.formatConfig.groupAllocationMode} onChange={(event) => updateTournamentConfig({ groupAllocationMode: event.target.value as TournamentState["event"]["formatConfig"]["groupAllocationMode"] })}>
+                        <option value="group_size">按每组人数</option>
+                        <option value="group_count">按小组数量</option>
+                      </select>
+                    </label>
+                  )}
+                </div>
+              </section>
+
+              {isGroupFormat && (
+                <section className="config-section">
+                  <h3>小组与晋级</h3>
+                  <div className="config-grid advancement-config-grid">
+                    {state.event.formatConfig.groupAllocationMode === "group_count"
+                      ? <NumberField label="小组数量" value={state.event.formatConfig.groupCount} min={1} onChange={(value) => updateTournamentConfig({ groupCount: Math.max(1, Math.trunc(value || 1)) })} />
+                      : <NumberField label="每组人数" value={state.event.formatConfig.groupSize} min={2} onChange={(value) => updateTournamentConfig({ groupSize: Math.max(2, Math.trunc(value || 2)) })} />}
+                    <NumberField label="每组保底出线" value={state.event.formatConfig.groupAdvancers} min={1} onChange={(value) => updateTournamentConfig({ groupAdvancers: Math.max(1, Math.trunc(value || 1)) })} />
+                    <NumberField label="淘汰赛目标人数" value={state.event.formatConfig.totalAdvancers} min={calculateMinimumGroupAdvancers(state.event)} onChange={(value) => updateTournamentConfig({ totalAdvancers: Math.trunc(value || 0) })} />
+                  </div>
+                  <p className="config-hint">当前预计 {calculateConfiguredGroupCount(state.event)} 组，淘汰赛目标人数至少为 {calculateMinimumGroupAdvancers(state.event)} 人。</p>
+                </section>
+              )}
+
+              {isSwissFormat && (
+                <section className="config-section">
+                  <h3>瑞士轮配置</h3>
+                  <div className="config-grid advancement-config-grid">
+                    <NumberField label="瑞士轮轮数" value={state.event.formatConfig.swissRounds} min={1} onChange={(value) => updateTournamentConfig({ swissRounds: Math.max(1, Math.trunc(value || 1)) })} />
+                    <NumberField label="瑞士轮晋级人数" value={state.event.formatConfig.swissAdvancers} min={2} onChange={(value) => updateTournamentConfig({ swissAdvancers: Math.max(2, Math.trunc(value || 2)) })} />
+                  </div>
+                </section>
+              )}
+
+              <section className="config-section">
+                <h3>阶段比赛规则</h3>
+                <div className="stage-rule-grid">
+                  <StageRuleEditor label="预赛 / 瑞士轮 / 附加赛" value={state.event.stageRuleConfig.preliminary} onChange={(patch) => updateStageRule("preliminary", patch)} />
+                  <StageRuleEditor label="淘汰赛" value={state.event.stageRuleConfig.elimination} onChange={(patch) => updateStageRule("elimination", patch)} />
+                  <StageRuleEditor label="冠亚季殿赛" value={state.event.stageRuleConfig.finals} onChange={(patch) => updateStageRule("finals", patch)} />
+                </div>
+              </section>
+
+              <section className="config-section">
+                <h3>编排选项</h3>
+                <div className="option-row">
+                  <label className="toggle-row"><input type="checkbox" checked={state.event.formatConfig.useSeeding} onChange={(event) => updateTournamentConfig({ useSeeding: event.target.checked })} />采用种子编排</label>
+                  {isGroupFormat && <label className="toggle-row"><input type="checkbox" checked={state.event.formatConfig.avoidClubInGroups} onChange={(event) => updateTournamentConfig({ avoidClubInGroups: event.target.checked })} />小组赛尽量避开同单位</label>}
+                  {isSwissFormat && <label className="toggle-row"><input type="checkbox" checked={state.event.formatConfig.avoidClubInSwiss} onChange={(event) => updateTournamentConfig({ avoidClubInSwiss: event.target.checked })} />瑞士轮尽量避开同单位</label>}
+                  {isSwissFormat && <label className="toggle-row"><input type="checkbox" checked={state.event.formatConfig.allowSwissBye} onChange={(event) => updateTournamentConfig({ allowSwissBye: event.target.checked })} />奇数人数允许轮空</label>}
+                  <label className="toggle-row"><input type="checkbox" checked={state.event.formatConfig.generateThirdPlaceMatch} onChange={(event) => updateTournamentConfig({ generateThirdPlaceMatch: event.target.checked })} />生成季军赛</label>
+                </div>
+              </section>
+            </fieldset>
             <div className="stage-actions">
               {isGroupFormat && <button onClick={generateGroupMatches} disabled={state.event.players.length < 2}>生成小组循环赛</button>}
               {isSwissFormat && (
@@ -840,7 +973,8 @@ function App() {
                         <th>阶段 / 轮次</th>
                         <th>现场分组</th>
                         <th>场地</th>
-                        <th>对阵</th>
+                        <th>红方</th>
+                        <th>蓝方</th>
                         <th>状态</th>
                       </tr>
                     </thead>
@@ -874,7 +1008,18 @@ function App() {
                                 onChange={(event) => patchState((current) => updateArrangementMatch(current, match.id, { piste: event.target.value }))}
                               />
                             </td>
-                            <td>{match.red.name} vs {match.blue.name}</td>
+                            <td>
+                              <div className="arrangement-competitor">
+                                <strong>{match.red.name}</strong>
+                                <span>{match.red.club || "未填写单位"}</span>
+                              </div>
+                            </td>
+                            <td>
+                              <div className="arrangement-competitor">
+                                <strong>{match.blue.name}</strong>
+                                <span>{match.blue.club || "未填写单位"}</span>
+                              </div>
+                            </td>
                             <td>{statusLabel(match.status)}</td>
                           </tr>
                         );
@@ -974,15 +1119,19 @@ function App() {
                 <button onClick={undoLastAction} disabled={(selectedMatch.history ?? []).length === 0}>撤销</button>
                 <button onClick={recordCurrentAppeal}>记录申诉</button>
                 <button onClick={resetCurrentMatch}>重置比赛</button>
+                <button onClick={openNextMatch} disabled={!nextMatchOnSamePiste}>
+                  下一场
+                  <ChevronRight size={18} />
+                </button>
                 <span>胜方：{getWinnerLabel(selectedMatch.winner, selectedMatch)}</span>
               </div>
               <div className="scoreboard">
-                <FighterPanel side="red" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
+                <FighterPanel side="red" match={selectedMatch} ruleSet={selectedMatchRule} onHit={addHit} onWarning={addWarning} />
                 <div className="timer-panel">
-                  <span>{getTimerLabel(selectedMatch, state.ruleSet)}</span>
+                  <span>{getTimerLabel(selectedMatch, selectedMatchRule)}</span>
                   <strong>{formatTime(selectedMatch.remainingSeconds)}</strong>
-                  {state.ruleSet.scoringMode === "round_limit" && (
-                    <RoundPanel match={selectedMatch} ruleSet={state.ruleSet} onRound={addRoundResult} />
+                  {selectedMatchRule.scoringMode === "round_limit" && (
+                    <RoundPanel match={selectedMatch} ruleSet={selectedMatchRule} onRound={addRoundResult} />
                   )}
                   <div className="timer-actions">
                     <button title="开始" onClick={() => setMatchStatus("running")} disabled={selectedMatch.status === "finished"}>
@@ -1002,11 +1151,11 @@ function App() {
                   </div>
                   <p>{statusLabel(selectedMatch.status)} · {getEndReasonLabel(selectedMatch.endReason)}</p>
                 </div>
-                <FighterPanel side="blue" match={selectedMatch} ruleSet={state.ruleSet} onHit={addHit} onWarning={addWarning} />
+                <FighterPanel side="blue" match={selectedMatch} ruleSet={selectedMatchRule} onHit={addHit} onWarning={addWarning} />
               </div>
               <ComprehensiveJudgement
                 match={selectedMatch}
-                ruleSet={state.ruleSet}
+                ruleSet={selectedMatchRule}
                 value={adjudication}
                 onChange={setAdjudication}
                 onSubmit={submitAdjudication}
@@ -1067,6 +1216,7 @@ function App() {
               <>
                 <RankingConfigPanel
                   state={state}
+                  locked={rulesLocked}
                   onEventPointChange={updateEventPointConfig}
                   onDisciplineChange={updateDisciplineConfig}
                   onWarningDeductionChange={updateWarningDeduction}
@@ -1139,7 +1289,7 @@ function App() {
             <div className="result-toolbar">
               <div>
                 <h2>规则文件</h2>
-                <p>支持 XLSX 多工作表，也支持单个 CSV 规则表。</p>
+                <p>{rulesLocked ? "赛事已经开始，全部规则已冻结。" : "支持 XLSX 多工作表，也支持单个 CSV 规则表。"}</p>
               </div>
               <div className="result-actions">
                 <FileImportControl
@@ -1153,47 +1303,49 @@ function App() {
               </div>
             </div>
             {ruleMessage && <p className="notice">{ruleMessage}</p>}
+            <fieldset className="rules-fieldset" disabled={rulesLocked}>
             <div className="rules-grid">
               <label className="field">
                 <span>计分模式</span>
-                <select value={state.ruleSet.scoringMode} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, scoringMode: event.target.value as RuleSet["scoringMode"] } }))}>
+                <select value={state.ruleSet.scoringMode} onChange={(event) => updateRuleSet({ scoringMode: event.target.value as RuleSet["scoringMode"] })}>
                   <option value="target_score">目标分模式</option>
                   <option value="round_limit">限制回合模式</option>
                 </select>
               </label>
-              <NumberField label="比赛时长（秒）" value={state.ruleSet.durationSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, durationSeconds: value } }))} />
-              <NumberField label="目标分" value={state.ruleSet.targetScore} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, targetScore: value } }))} />
-              <NumberField label="最大回合数" value={state.ruleSet.maxRounds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, maxRounds: value } }))} />
-              <NumberField label="加时时长（秒）" value={state.ruleSet.overtimeSeconds} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, overtimeSeconds: value } }))} />
-              <NumberField label="处罚判负次数" value={state.ruleSet.maxPenaltyCount} onChange={(value) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, maxPenaltyCount: value } }))} />
+              <NumberField label="比赛时长（秒）" value={state.ruleSet.durationSeconds} onChange={(value) => updateRuleSet({ durationSeconds: value })} />
+              <NumberField label="目标分" value={state.ruleSet.targetScore} onChange={(value) => updateRuleSet({ targetScore: value })} />
+              <NumberField label="最大回合数" value={state.ruleSet.maxRounds} onChange={(value) => updateRuleSet({ maxRounds: value })} />
+              <NumberField label="加时时长（秒）" value={state.ruleSet.overtimeSeconds} onChange={(value) => updateRuleSet({ overtimeSeconds: value })} />
+              <NumberField label="处罚判负次数" value={state.ruleSet.maxPenaltyCount} onChange={(value) => updateRuleSet({ maxPenaltyCount: value })} />
               <label className="toggle-row">
-                <input type="checkbox" checked={state.ruleSet.allowDoubleHit} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowDoubleHit: event.target.checked } }))} />
+                <input type="checkbox" checked={state.ruleSet.allowDoubleHit} onChange={(event) => updateRuleSet({ allowDoubleHit: event.target.checked })} />
                 允许双方得分
               </label>
               <label className="toggle-row">
-                <input type="checkbox" checked={state.ruleSet.allowNoHitRound} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowNoHitRound: event.target.checked } }))} />
+                <input type="checkbox" checked={state.ruleSet.allowNoHitRound} onChange={(event) => updateRuleSet({ allowNoHitRound: event.target.checked })} />
                 允许无效回合
               </label>
               <label className="toggle-row">
-                <input type="checkbox" checked={state.ruleSet.allowDraw} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, allowDraw: event.target.checked } }))} />
+                <input type="checkbox" checked={state.ruleSet.allowDraw} onChange={(event) => updateRuleSet({ allowDraw: event.target.checked })} />
                 允许平局
               </label>
               <label className="toggle-row">
-                <input type="checkbox" checked={state.ruleSet.enableOvertime} onChange={(event) => patchState((current) => ({ ...current, ruleSet: { ...current.ruleSet, enableOvertime: event.target.checked } }))} />
+                <input type="checkbox" checked={state.ruleSet.enableOvertime} onChange={(event) => updateRuleSet({ enableOvertime: event.target.checked })} />
                 启用加时
               </label>
             </div>
+            </fieldset>
             <RuleSummary ruleSet={state.ruleSet} />
           </FileDropZone>
         )}
 
         {activeView === "results" && (
           <FileDropZone
-            accept=".json,application/json"
+            accept=".json,.xlsx,.xls,.csv,application/json"
             className="panel results-panel"
-            dropLabel="松开导入完整备份"
-            onFile={handleBackupImport}
-            onReject={setBackupMessage}
+            dropLabel="松开导入比赛结果或完整备份"
+            onFile={handleResultsPageDrop}
+            onReject={setResultImportMessage}
           >
             <div className="result-toolbar">
               <div>
@@ -1201,11 +1353,19 @@ function App() {
                 <p>用于提交或归档比赛结果，不用于完整恢复现场状态。</p>
               </div>
               <div className="result-actions">
+                <FileImportControl
+                  accept=".xlsx,.xls,.csv"
+                  icon={<Upload size={18} />}
+                  label="导入比赛结果"
+                  onFile={handleResultImport}
+                  onReject={setResultImportMessage}
+                />
                 <button onClick={() => exportTournamentResultsToExcel({ ...state, event: syncedEvent }, liveRankings)}><FileSpreadsheet size={18} />导出赛事结果 Excel</button>
                 <button onClick={() => exportMatchesToCsv(state.matches)}><Download size={18} />导出 CSV</button>
                 <button onClick={() => exportMatchesToExcel(state.matches)}><FileSpreadsheet size={18} />导出 Excel</button>
               </div>
             </div>
+            {resultImportMessage && <p className="notice">{resultImportMessage}</p>}
             <div className="backup-box">
               <div>
                 <h2>完整备份</h2>
@@ -1378,24 +1538,32 @@ function ComprehensiveJudgement(props: {
           <span>蓝方得分</span>
           <input type="number" min={0} value={props.value.blueScoreDelta} onChange={(event) => update({ blueScoreDelta: Number(event.target.value) })} />
         </label>
-        <label className="field">
-          <span>红方警告</span>
-          <select value={props.value.redWarningId} onChange={(event) => update({ redWarningId: event.target.value })}>
-            <option value="">无</option>
-            {props.ruleSet.warningLevels.map((warning) => (
-              <option key={warning.id} value={warning.id}>{warning.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>蓝方警告</span>
-          <select value={props.value.blueWarningId} onChange={(event) => update({ blueWarningId: event.target.value })}>
-            <option value="">无</option>
-            {props.ruleSet.warningLevels.map((warning) => (
-              <option key={warning.id} value={warning.id}>{warning.label}</option>
-            ))}
-          </select>
-        </label>
+      </div>
+      <div className="adjudication-warning-list">
+        <div className="adjudication-warning-header">
+          <span>警告类型</span>
+          <span>红方次数</span>
+          <span>蓝方次数</span>
+        </div>
+        {props.ruleSet.warningLevels.map((warning) => (
+          <div key={warning.id} className="adjudication-warning-row">
+            <strong>{warning.label}</strong>
+            <input
+              aria-label={`红方${warning.label}次数`}
+              type="number"
+              min={0}
+              value={props.value.redWarnings[warning.id] ?? 0}
+              onChange={(event) => update({ redWarnings: { ...props.value.redWarnings, [warning.id]: Math.max(0, Math.trunc(Number(event.target.value) || 0)) } })}
+            />
+            <input
+              aria-label={`蓝方${warning.label}次数`}
+              type="number"
+              min={0}
+              value={props.value.blueWarnings[warning.id] ?? 0}
+              onChange={(event) => update({ blueWarnings: { ...props.value.blueWarnings, [warning.id]: Math.max(0, Math.trunc(Number(event.target.value) || 0)) } })}
+            />
+          </div>
+        ))}
       </div>
       <button className="primary-action" onClick={props.onSubmit} disabled={isLocked}>提交综合判定</button>
     </div>
@@ -1503,6 +1671,7 @@ function DataTable(props: { headers: string[]; rows: Array<Array<string | number
 
 function RankingConfigPanel(props: {
   state: TournamentState;
+  locked: boolean;
   onEventPointChange: (patch: Partial<TournamentState["event"]["eventPointConfig"]>) => void;
   onDisciplineChange: (patch: Partial<TournamentState["event"]["disciplinePointConfig"]>) => void;
   onWarningDeductionChange: (warningId: string, deduction: number) => void;
@@ -1511,7 +1680,7 @@ function RankingConfigPanel(props: {
 }) {
   const sortedRules = [...props.state.event.rankingRules].sort((a, b) => a.priority - b.priority);
   return (
-    <div className="ranking-config">
+    <fieldset className="ranking-config rules-fieldset" disabled={props.locked}>
       <section>
         <h2>赛事积分</h2>
         <div className="rules-grid">
@@ -1564,7 +1733,7 @@ function RankingConfigPanel(props: {
           ))}
         </div>
       </section>
-    </div>
+    </fieldset>
   );
 }
 
@@ -1659,6 +1828,20 @@ function RuleSummary(props: { ruleSet: RuleSet }) {
           <p key={`${item.fromWarningId}-${item.toWarningId}`}>{item.fromWarningId} 累计 {item.count} 次转 {item.toWarningId}</p>
         ))}
       </div>
+    </div>
+  );
+}
+
+function StageRuleEditor(props: {
+  label: string;
+  value: TournamentStageRuleConfig["preliminary"];
+  onChange: (patch: Partial<TournamentStageRuleConfig["preliminary"]>) => void;
+}) {
+  return (
+    <div className="stage-rule-editor">
+      <strong>{props.label}</strong>
+      <NumberField label="时长（秒）" value={props.value.durationSeconds} min={1} onChange={(value) => props.onChange({ durationSeconds: Math.max(1, Math.trunc(value || 1)) })} />
+      <NumberField label="目标分" value={props.value.targetScore} min={1} onChange={(value) => props.onChange({ targetScore: Math.max(1, Math.trunc(value || 1)) })} />
     </div>
   );
 }

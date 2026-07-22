@@ -198,7 +198,7 @@ h1 {
 
 .home-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid #ddd3c2;
   border-bottom: 1px solid #ddd3c2;
 }
@@ -222,6 +222,36 @@ h1 {
 .home-metrics strong {
   font-size: 28px;
   overflow-wrap: anywhere;
+}
+
+.event-id-row,
+.tournament-identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid #ddd3c2;
+}
+
+.event-id-row > div,
+.tournament-identity > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.event-id-row span,
+.tournament-identity span {
+  color: #6d746f;
+  font-size: 13px;
+}
+
+.event-id-row code,
+.tournament-identity code {
+  overflow-wrap: anywhere;
+  color: #26312c;
 }
 
 .progress-section {
@@ -584,8 +614,8 @@ h1 {
 
 .adjudication-panel {
   display: grid;
-  grid-template-columns: minmax(180px, 260px) 1fr auto;
-  align-items: end;
+  grid-template-columns: minmax(180px, 240px) minmax(320px, 1fr) auto;
+  align-items: start;
   gap: 16px;
   padding: 18px;
   border: 1px solid #ddd3c2;
@@ -604,8 +634,46 @@ h1 {
 
 .adjudication-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
   gap: 12px;
+}
+
+.adjudication-warning-list {
+  grid-column: 2;
+  display: grid;
+  border-top: 1px solid #e1d7c8;
+}
+
+.adjudication-warning-header,
+.adjudication-warning-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) 110px 110px;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  border-bottom: 1px solid #e7ded0;
+}
+
+.adjudication-warning-header {
+  min-height: 36px;
+  color: #6d746f;
+  font-size: 13px;
+}
+
+.adjudication-warning-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #cfc5b6;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #fffdf8;
+}
+
+.adjudication-panel > .primary-action {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: end;
 }
 
 .primary-action {
@@ -667,6 +735,95 @@ h1 {
   gap: 18px;
 }
 
+.tournament-config,
+.rules-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.tournament-config {
+  display: grid;
+}
+
+.tournament-config:disabled,
+.rules-fieldset:disabled {
+  opacity: 0.72;
+}
+
+.config-section {
+  display: grid;
+  gap: 12px;
+  padding: 18px 0;
+  border-bottom: 1px solid #ddd3c2;
+}
+
+.config-section:first-child {
+  padding-top: 4px;
+}
+
+.config-section h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.config-grid,
+.stage-rule-grid,
+.option-row {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.basic-config-grid,
+.advancement-config-grid,
+.stage-rule-grid {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.option-row {
+  grid-template-columns: repeat(auto-fit, minmax(190px, max-content));
+  align-items: center;
+}
+
+.toggle-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.stage-rule-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 3px solid #8a7b68;
+}
+
+.stage-rule-editor > strong {
+  grid-column: 1 / -1;
+}
+
+.config-hint {
+  color: #6d746f;
+  font-size: 13px;
+}
+
+.rule-status {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: #e3eee6;
+  color: #285d3d !important;
+  font-weight: 700;
+}
+
+.rule-status.locked {
+  background: #efe3df;
+  color: #8a3029 !important;
+}
+
 .player-input-grid {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -693,6 +850,8 @@ h1 {
 .field input,
 .field select,
 .field textarea {
+  width: 100%;
+  min-width: 0;
   min-height: 42px;
   border: 1px solid #cfc5b6;
   border-radius: 6px;
@@ -878,6 +1037,22 @@ h1 {
   background: transparent;
   color: #596760;
   opacity: 1;
+}
+
+.arrangement-competitor {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.arrangement-competitor strong,
+.arrangement-competitor span {
+  overflow-wrap: anywhere;
+}
+
+.arrangement-competitor span {
+  color: #6d746f;
+  font-size: 13px;
 }
 
 .swiss-round-list {
@@ -1289,6 +1464,33 @@ th {
   .ranking-rule-row,
   .swiss-round-row {
     grid-template-columns: 1fr;
+  }
+
+  .adjudication-warning-list,
+  .adjudication-panel > .primary-action {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .adjudication-warning-header,
+  .adjudication-warning-row {
+    grid-template-columns: minmax(96px, 1fr) 72px 72px;
+    gap: 8px;
+  }
+
+  .basic-config-grid,
+  .advancement-config-grid,
+  .stage-rule-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .option-row {
+    grid-template-columns: 1fr;
+  }
+
+  .event-id-row,
+  .tournament-identity {
+    align-items: flex-start;
   }
 
   .fighter-panel,

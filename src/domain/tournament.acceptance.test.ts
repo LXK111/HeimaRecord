@@ -166,13 +166,64 @@ describe("赛事编排验收", () => {
     expect(countGroupClubConflicts(generated.event.players)).toBe(2);
   });
 
+  it("支持按小组数量分组，并按保底名额补足淘汰赛目标人数", () => {
+    const event = createEvent("group_bracket", 10, {
+      groupAllocationMode: "group_count",
+      groupCount: 3,
+      groupAdvancers: 1,
+      totalAdvancers: 4,
+    });
+    const generated = generateGroupStage(event, defaultRuleSet, () => 0);
+    expect(generated.event.groupNames).toHaveLength(3);
+    expect(generated.event.groupNames.map((groupName) => generated.event.players.filter((player) => player.groupName === groupName).length)).toEqual([4, 3, 3]);
+
+    const ranked = refreshTournamentRankings(generated.event, finishPendingMatches(generated.matches), defaultRuleSet);
+    expect(ranked.rankings.filter((ranking) => ranking.advanced)).toHaveLength(4);
+    generated.event.groupNames.forEach((groupName) => {
+      expect(ranked.rankings.some((ranking) => ranking.groupName === groupName && ranking.advanced)).toBe(true);
+    });
+  });
+
+  it("小组排场按轮次生成，每轮同一选手最多出场一次", () => {
+    const event = createEvent("group_bracket", 12, { groupSize: 6, pisteCount: 2 });
+    const generated = generateGroupStage(event, defaultRuleSet, () => 0);
+    generated.event.groupNames.forEach((groupName) => {
+      const groupMatches = generated.matches.filter((match) => match.groupName === groupName);
+      const rounds = new Set(groupMatches.map((match) => match.tournamentRound));
+      rounds.forEach((roundNo) => {
+        const playerIds = groupMatches.filter((match) => match.tournamentRound === roundNo).flatMap((match) => [match.redPlayerId, match.bluePlayerId]);
+        expect(new Set(playerIds).size).toBe(playerIds.length);
+      });
+    });
+  });
+
+  it("预赛、淘汰赛和决赛分别使用对应时长与目标分", () => {
+    const event = createEvent("group_bracket", 4, { groupSize: 4, groupAdvancers: 2, totalAdvancers: 2 });
+    event.stageRuleConfig = {
+      preliminary: { durationSeconds: 120, targetScore: 5 },
+      elimination: { durationSeconds: 180, targetScore: 10 },
+      finals: { durationSeconds: 240, targetScore: 15 },
+    };
+    const group = generateGroupStage(event, defaultRuleSet, () => 0);
+    expect(group.matches.every((match) => match.remainingSeconds === 120 && match.ruleProfile === "preliminary")).toBe(true);
+
+    const ranked = refreshTournamentRankings(group.event, finishPendingMatches(group.matches), defaultRuleSet);
+    const bracket = generateDirectEliminationBracket({ ...ranked, formatConfig: { ...ranked.formatConfig, format: "direct_bracket" } }, group.matches, defaultRuleSet, () => 0);
+    expect(bracket.matches.every((match) => match.ruleProfile === "elimination" && match.remainingSeconds === 180)).toBe(true);
+    const finalRound = advanceBracket(bracket.event, finishPendingMatches(bracket.matches), defaultRuleSet);
+    expect(finalRound.matches).toHaveLength(2);
+    expect(finalRound.matches.every((match) => match.ruleProfile === "finals" && match.remainingSeconds === 240)).toBe(true);
+  });
+
   it("编排导出包含场次明细和场地统计", () => {
     const event = createEvent("group_bracket", 8, { groupSize: 4, pisteCount: 2 });
     const generated = generateGroupStage(event, defaultRuleSet, () => 0);
     const workbook = buildArrangementWorkbook({ ...createInitialState(), event: generated.event, matches: generated.matches });
 
-    expect(workbook.worksheets.map((worksheet) => worksheet.name)).toEqual(["编排场次", "场地统计"]);
+    expect(workbook.worksheets.map((worksheet) => worksheet.name)).toEqual(["编排场次", "赛事信息", "场地统计"]);
     expect(workbook.getWorksheet("编排场次")?.rowCount).toBe(13);
+    expect(workbook.getWorksheet("编排场次")?.getCell("A2").value).toBe(event.id);
+    expect(workbook.getWorksheet("赛事信息")?.getCell("B2").value).toBe(event.id);
     expect(workbook.getWorksheet("场地统计")?.rowCount).toBe(3);
 
     const adjustedMatches = generated.matches.map((match, index) => index === 0 ? { ...match, piste: "主场" } : match);

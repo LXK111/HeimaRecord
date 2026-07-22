@@ -1,4 +1,5 @@
 import { defaultRuleSet, normalizeMatch, normalizeRuleSet } from "../domain/rules";
+import { inferMatchRuleProfile } from "../domain/matchRules";
 import type { DisciplinePointConfig, EventPointConfig, RankingRuleConfig, RuleSet, TournamentEvent, TournamentState } from "../types";
 
 const DB_NAME = "heima-record-db";
@@ -33,26 +34,41 @@ export function createInitialState(): TournamentState {
 
 export function normalizeState(state: TournamentState): TournamentState {
   const ruleSet = normalizeRuleSet(state.ruleSet);
+  let event = normalizeTournamentEvent(state.event, ruleSet);
+  const matches = (state.matches ?? []).map((match) => ({
+    ...normalizeMatch(match, ruleSet),
+    eventId: match.eventId ?? event.id,
+    ruleProfile: match.ruleProfile ?? inferMatchRuleProfile(match.tournamentStage, match.groupName),
+  }));
+  const hasStartedMatch = matches.some((match) => Boolean(match.tournamentStage) && match.status !== "pending");
+  if (hasStartedMatch && state.event?.rulesLockedAt === undefined) {
+    const inferredStart = state.updatedAt ?? new Date().toISOString();
+    event = { ...event, startedAt: inferredStart, rulesLockedAt: inferredStart };
+  }
   return {
     ...state,
     ruleSet,
-    event: normalizeTournamentEvent(state.event),
-    matches: (state.matches ?? []).map((match) => normalizeMatch(match, ruleSet)),
+    event,
+    matches,
     selectedMatchId: state.selectedMatchId ?? null,
     updatedAt: state.updatedAt ?? new Date().toISOString(),
   };
 }
 
-export function createDefaultTournamentEvent(): TournamentEvent {
-  const ruleSet = defaultRuleSet;
+export function createDefaultTournamentEvent(ruleSet: RuleSet = defaultRuleSet): TournamentEvent {
   return {
+    id: crypto.randomUUID(),
     players: [],
     stage: "setup",
+    startedAt: null,
+    rulesLockedAt: null,
     formatConfig: {
       format: "group_bracket",
       useSeeding: false,
       pisteCount: 1,
+      groupAllocationMode: "group_size",
       groupSize: 6,
+      groupCount: 2,
       groupAdvancers: 2,
       totalAdvancers: 4,
       avoidClubInGroups: true,
@@ -62,6 +78,7 @@ export function createDefaultTournamentEvent(): TournamentEvent {
       allowSwissBye: true,
       generateThirdPlaceMatch: true,
     },
+    stageRuleConfig: createDefaultStageRuleConfig(ruleSet),
     eventPointConfig: createDefaultEventPointConfig(),
     rankingRules: createDefaultRankingRules(),
     disciplinePointConfig: createDefaultDisciplinePointConfig(ruleSet),
@@ -73,13 +90,13 @@ export function createDefaultTournamentEvent(): TournamentEvent {
   };
 }
 
-function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentEvent {
-  const fallback = createDefaultTournamentEvent();
+function normalizeTournamentEvent(event: Partial<TournamentEvent> | undefined, ruleSet: RuleSet): TournamentEvent {
+  const fallback = createDefaultTournamentEvent(ruleSet);
   const legacyFormatConfig = event?.formatConfig as (Partial<TournamentEvent["formatConfig"]> & {
     swissGroupCount?: number;
     randomizeSwissFirstRound?: boolean;
   }) | undefined;
-  const formatConfig = {
+  let formatConfig = {
     ...fallback.formatConfig,
     ...event?.formatConfig,
     // 旧备份默认按种子编排；历史“首轮随机”打开时迁移为关闭全局种子。
@@ -87,12 +104,28 @@ function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentE
       ? legacyFormatConfig.useSeeding ?? !(legacyFormatConfig.randomizeSwissFirstRound ?? false)
       : fallback.formatConfig.useSeeding,
     pisteCount: normalizePisteCount(legacyFormatConfig?.pisteCount ?? legacyFormatConfig?.swissGroupCount),
+    groupAllocationMode: legacyFormatConfig?.groupAllocationMode ?? "group_size",
+    groupCount: Math.max(1, Math.trunc(legacyFormatConfig?.groupCount || fallback.formatConfig.groupCount)),
   };
+  const activePlayerCount = (event?.players ?? []).filter((player) => player.status === "active").length;
+  if (formatConfig.format === "group_bracket" && activePlayerCount > 0) {
+    const groupCount = formatConfig.groupAllocationMode === "group_count"
+      ? Math.max(1, Math.min(activePlayerCount, formatConfig.groupCount))
+      : Math.max(1, Math.ceil(activePlayerCount / Math.max(2, formatConfig.groupSize)));
+    const smallestGroupSize = Math.floor(activePlayerCount / groupCount);
+    const groupAdvancers = Math.max(1, Math.min(formatConfig.groupAdvancers, smallestGroupSize));
+    formatConfig = {
+      ...formatConfig,
+      groupAdvancers,
+      totalAdvancers: Math.min(activePlayerCount, Math.max(formatConfig.totalAdvancers, groupCount * groupAdvancers)),
+    };
+  }
   return {
     ...fallback,
     ...event,
     players: event?.players ?? [],
     formatConfig,
+    stageRuleConfig: normalizeStageRuleConfig(event?.stageRuleConfig, ruleSet),
     eventPointConfig: {
       ...fallback.eventPointConfig,
       ...event?.eventPointConfig,
@@ -111,6 +144,31 @@ function normalizeTournamentEvent(event?: Partial<TournamentEvent>): TournamentE
     swissRounds: event?.swissRounds ?? [],
     bracketNodes: event?.bracketNodes ?? [],
     updatedAt: event?.updatedAt ?? new Date().toISOString(),
+  };
+}
+
+export function createDefaultStageRuleConfig(ruleSet: RuleSet) {
+  const base = { durationSeconds: ruleSet.durationSeconds, targetScore: ruleSet.targetScore };
+  return {
+    preliminary: { ...base },
+    elimination: { ...base },
+    finals: { ...base },
+  };
+}
+
+function normalizeStageRuleConfig(config: Partial<TournamentEvent["stageRuleConfig"]> | undefined, ruleSet: RuleSet) {
+  const fallback = createDefaultStageRuleConfig(ruleSet);
+  return {
+    preliminary: normalizeStageRule(config?.preliminary, fallback.preliminary),
+    elimination: normalizeStageRule(config?.elimination, fallback.elimination),
+    finals: normalizeStageRule(config?.finals, fallback.finals),
+  };
+}
+
+function normalizeStageRule(value: Partial<TournamentEvent["stageRuleConfig"]["preliminary"]> | undefined, fallback: TournamentEvent["stageRuleConfig"]["preliminary"]) {
+  return {
+    durationSeconds: Math.max(1, Math.trunc(value?.durationSeconds || fallback.durationSeconds)),
+    targetScore: Math.max(1, Math.trunc(value?.targetScore || fallback.targetScore)),
   };
 }
 

@@ -69,6 +69,10 @@ export function resetTournamentState(state: TournamentState, initialState: Tourn
   return touchState({
     ...initialState,
     ruleSet: state.ruleSet,
+    event: {
+      ...initialState.event,
+      stageRuleConfig: state.event.stageRuleConfig,
+    },
   });
 }
 

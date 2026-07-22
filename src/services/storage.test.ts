@@ -31,4 +31,19 @@ describe("赛事配置兼容", () => {
     legacyConfig.randomizeSwissFirstRound = true;
     expect(normalizeState(legacyState).event.formatConfig.useSeeding).toBe(false);
   });
+
+  it("加载旧赛事时自动修正小于每组保底总数的淘汰赛目标人数", () => {
+    const state = createInitialState();
+    state.event.players = Array.from({ length: 16 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `选手${index + 1}`,
+      club: "",
+      seed: index + 1,
+      status: "active" as const,
+      groupName: "",
+    }));
+    state.event.formatConfig = { ...state.event.formatConfig, groupSize: 4, groupAdvancers: 2, totalAdvancers: 4 };
+
+    expect(normalizeState(state).event.formatConfig.totalAdvancers).toBe(8);
+  });
 });

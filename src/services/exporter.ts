@@ -16,6 +16,11 @@ type ExportRow = Record<string, ExportCell>;
 
 function buildRows(matches: Match[]): ExportRow[] {
   return matches.map((match) => ({
+    赛事ID: match.eventId ?? "",
+    场次ID: match.id,
+    规则档位: match.ruleProfile ?? "",
+    赛事阶段代码: match.tournamentStage ?? "",
+    赛事轮次: match.tournamentRound ?? "",
     场次编号: match.matchNo,
     组别: match.groupName,
     场地: match.piste,
@@ -29,11 +34,22 @@ function buildRows(matches: Match[]): ExportRow[] {
     蓝方警告: Object.entries(match.blueWarnings ?? {}).map(([id, count]) => `${id}:${count}`).join("；"),
     红方处罚: match.redPenalties,
     蓝方处罚: match.bluePenalties,
+    红方选手ID: match.redPlayerId ?? "",
+    蓝方选手ID: match.bluePlayerId ?? "",
     计分模式: match.roundRecords?.length ? "限制回合" : "目标分/基础计分",
     回合记录: (match.roundRecords ?? []).map((round) => `第${round.roundNumber}回合:${round.result}`).join("；"),
     胜方: getWinnerLabel(match.winner, match),
+    胜方代码: match.winner ?? "",
     结束原因: getEndReasonLabel(match.endReason),
+    结束原因代码: match.endReason ?? "",
     状态: match.status,
+    剩余秒数: match.remainingSeconds,
+    是否加时: match.isOvertime ? "1" : "0",
+    当前回合: match.currentRound,
+    红方警告JSON: JSON.stringify(match.redWarnings ?? {}),
+    蓝方警告JSON: JSON.stringify(match.blueWarnings ?? {}),
+    回合记录JSON: JSON.stringify(match.roundRecords ?? []),
+    操作记录JSON: JSON.stringify(match.events ?? []),
     申诉记录: match.events.filter((event) => event.type === "appeal_recorded").map((event) => event.label).join("；"),
     赛后修正: match.events.filter((event) => event.type === "post_match_adjustment").map((event) => event.label).join("；"),
     记录: match.events.map((event) => event.label).join("；"),
@@ -84,25 +100,16 @@ export function buildArrangementWorkbook(state: TournamentState) {
   workbook.created = new Date();
   const matches = state.matches.filter((match) => match.tournamentStage);
   const configuredPistes = Array.from({ length: state.event.formatConfig.pisteCount }, (_, index) => `场地 ${index + 1}`);
-  addTableWorksheet(
-    workbook,
-    "编排场次",
-    ["场次编号", "阶段", "轮次", "分组", "场地", "红方", "红方单位", "蓝方", "蓝方单位", "状态", "比分", "胜方"],
-    matches.map((match) => ({
-      场次编号: match.matchNo,
-      阶段: tournamentStageLabel(match.tournamentStage),
-      轮次: match.tournamentRound ?? "",
-      分组: match.groupName,
-      场地: match.piste,
-      红方: match.red.name,
-      红方单位: match.red.club,
-      蓝方: match.blue.name,
-      蓝方单位: match.blue.club,
-      状态: match.status === "finished" ? "已结束" : match.status === "running" ? "进行中" : "未开始",
-      比分: `${match.redScore}:${match.blueScore}`,
-      胜方: getWinnerLabel(match.winner, match),
-    }))
-  );
+  addTableWorksheet(workbook, "编排场次", Object.keys(buildRows(matches)[0] ?? { 赛事ID: "" }), buildRows(matches));
+  addTableWorksheet(workbook, "赛事信息", ["项目", "内容"], [
+    { 项目: "赛事ID", 内容: state.event.id },
+    { 项目: "赛事名称", 内容: state.name },
+    { 项目: "基础规则JSON", 内容: JSON.stringify(state.ruleSet) },
+    { 项目: "阶段规则JSON", 内容: JSON.stringify(state.event.stageRuleConfig) },
+    { 项目: "赛事开始时间", 内容: state.event.startedAt ?? "" },
+    { 项目: "规则冻结时间", 内容: state.event.rulesLockedAt ?? "" },
+    { 项目: "导出时间", 内容: new Date().toISOString() },
+  ]);
   addTableWorksheet(
     workbook,
     "场地统计",
@@ -357,20 +364,6 @@ function bracketStageLabel(stage: TournamentStageType) {
     grand_final: "总决赛",
   };
   return labels[stage] ?? "淘汰赛";
-}
-
-function tournamentStageLabel(stage?: TournamentStageType) {
-  const labels: Partial<Record<TournamentStageType, string>> = {
-    group: "小组赛",
-    playoff: "附加赛",
-    swiss: "瑞士轮",
-    bracket: "单败淘汰",
-    third_place: "季军赛",
-    winner_bracket: "胜者组",
-    loser_bracket: "败者组",
-    grand_final: "总决赛",
-  };
-  return stage ? labels[stage] ?? stage : "";
 }
 
 function bracketStatusLabel(status: BracketNode["status"]) {

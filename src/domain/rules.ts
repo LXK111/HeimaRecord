@@ -282,8 +282,8 @@ export function recordAdjudication(match: Match, input: AdjudicationInput, ruleS
     });
   }
 
-  next = applyOptionalWarning(next, "red", input.redWarningId, ruleSet);
-  next = applyOptionalWarning(next, "blue", input.blueWarningId, ruleSet);
+  next = applyWarningCounts(next, "red", input.redWarnings, ruleSet);
+  next = applyWarningCounts(next, "blue", input.blueWarnings, ruleSet);
   if (next.status === "finished") return next;
 
   if (shouldRecordRound && !next.isOvertime && next.roundRecords.length >= ruleSet.maxRounds) {
@@ -329,14 +329,25 @@ export function applyWarning(match: Match, side: "red" | "blue", warningId: stri
   return applyWarningLevel(withHistory(match), side, warning, ruleSet, true);
 }
 
-function applyOptionalWarning(match: Match, side: MatchSide, warningId: string, ruleSet: RuleSet): Match {
-  if (!warningId || match.status === "finished") return match;
-  const warning = ruleSet.warningLevels.find((item) => item.id === warningId);
-  if (!warning) return match;
-  return applyWarningLevel(match, side, warning, ruleSet, true);
+function applyWarningCounts(match: Match, side: MatchSide, warnings: Record<string, number>, ruleSet: RuleSet) {
+  let next = match;
+  for (const warning of ruleSet.warningLevels) {
+    const count = Math.max(0, Math.trunc(warnings[warning.id] ?? 0));
+    for (let index = 0; index < count && next.status !== "finished"; index += 1) {
+      next = applyWarningLevel(next, side, warning, ruleSet, true);
+    }
+  }
+  return next;
 }
 
-function applyWarningLevel(match: Match, side: "red" | "blue", warning: WarningLevel, ruleSet: RuleSet, allowConversion: boolean): Match {
+function applyWarningLevel(
+  match: Match,
+  side: "red" | "blue",
+  warning: WarningLevel,
+  ruleSet: RuleSet,
+  allowConversion: boolean,
+  visitedConversions = new Set<string>()
+): Match {
   const sideLabel = side === "red" ? "红方" : "蓝方";
   const warningKey = side === "red" ? "redWarnings" : "blueWarnings";
   const penaltyKey = side === "red" ? "redPenalties" : "bluePenalties";
@@ -357,26 +368,33 @@ function applyWarningLevel(match: Match, side: "red" | "blue", warning: WarningL
     return stopMatchByPenalty(next, side, warning);
   }
 
-  if (ruleSet.maxPenaltyCount > 0 && nextPenaltyCount >= ruleSet.maxPenaltyCount) {
-    return finishMatch(next, side === "red" ? "blue" : "red", "forfeit", false);
-  }
-
-  // 转换规则只在原始警告后触发一次链式判断，避免无限循环或重复转换。
+  // 转换会消费来源警告；已产生的扣分和处罚属于历史效果，不随牌面转换回滚。
   if (allowConversion) {
-    const conversion = ruleSet.warningConversions.find((item) => item.fromWarningId === warning.id && item.count > 0 && nextWarnings[warning.id] % item.count === 0);
+    const conversion = ruleSet.warningConversions.find((item) => item.fromWarningId === warning.id && item.count > 0 && (nextWarnings[warning.id] ?? 0) >= item.count);
     const converted = conversion ? ruleSet.warningLevels.find((item) => item.id === conversion.toWarningId) : null;
-    if (converted) {
+    const conversionKey = conversion ? `${conversion.fromWarningId}->${conversion.toWarningId}` : "";
+    if (conversion && converted && !visitedConversions.has(conversionKey)) {
+      const remainingSourceCount = (next[warningKey][warning.id] ?? 0) - conversion.count;
+      const convertedWarnings = { ...next[warningKey], [warning.id]: remainingSourceCount };
+      if (remainingSourceCount === 0) delete convertedWarnings[warning.id];
       next = applyWarningLevel(
         {
           ...next,
-          events: [...next.events, createMatchEvent(match.id, "warning_added", `${sideLabel}${warning.label}累计${conversion?.count}次，转换为${converted.label}`)],
+          [warningKey]: convertedWarnings,
+          events: [...next.events, createMatchEvent(match.id, "warning_added", `${sideLabel}${warning.label}消费${conversion.count}次，转换为${converted.label}`)],
         },
         side,
         converted,
         ruleSet,
-        false
+        true,
+        new Set([...visitedConversions, conversionKey])
       );
     }
+  }
+
+  if (next.status === "finished") return next;
+  if (ruleSet.maxPenaltyCount > 0 && next[penaltyKey] >= ruleSet.maxPenaltyCount) {
+    return finishMatch(next, side === "red" ? "blue" : "red", "forfeit", false);
   }
 
   return next;
